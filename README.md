@@ -9,13 +9,13 @@ Tools like `pssh`, `pdsh`, and `ansible` can run commands across hosts, but none
 ## Install
 
 ```bash
-go install github.com/bryanhitc/herd/cmd/herd@latest
+go install github.com/agent462/herd/cmd/herd@latest
 ```
 
 Or build from source:
 
 ```bash
-git clone https://github.com/bryanhitc/herd.git
+git clone https://github.com/agent462/herd.git
 cd herd
 go build -o herd ./cmd/herd/
 ```
