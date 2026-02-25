@@ -1,0 +1,19 @@
+# Binary output
+herd
+/cmd/herd/herd
+
+# Test and coverage
+*.test
+*.out
+coverage.html
+
+# OS files
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+herd*.md
+.c*
