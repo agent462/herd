@@ -8,11 +8,12 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/bryanhitc/herd/internal/executor"
-	"github.com/bryanhitc/herd/internal/grouper"
-	hssh "github.com/bryanhitc/herd/internal/ssh"
-	"github.com/bryanhitc/herd/internal/sshtest"
-	execui "github.com/bryanhitc/herd/internal/ui/exec"
+	"github.com/agent462/herd/internal/executor"
+	"github.com/agent462/herd/internal/grouper"
+	"github.com/agent462/herd/internal/selector"
+	hssh "github.com/agent462/herd/internal/ssh"
+	"github.com/agent462/herd/internal/sshtest"
+	execui "github.com/agent462/herd/internal/ui/exec"
 )
 
 // hostRunner is a test adapter that maps logical host names to 127.0.0.1 connections
@@ -507,4 +508,252 @@ func TestFullPipeline_ProxyJump(t *testing.T) {
 	}
 
 	t.Logf("ProxyJump output:\n%s", output)
+}
+
+// --- Phase 2 integration tests ---
+
+// TestPool_REPLWorkflow simulates a REPL session: run a command using a Pool,
+// group the results, then use selectors to target subsets for follow-up commands.
+func TestPool_REPLWorkflow(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+
+	pubKey, keyPath := sshtest.GenerateKey(t)
+
+	// 3 servers: 2 identical, 1 different.
+	addr1, cleanup1 := sshtest.Start(t, sshtest.WithPublicKey(pubKey), sshtest.WithCmdHandler(func(cmd string) (string, string, int) {
+		return "Debian 12\n", "", 0
+	}))
+	defer cleanup1()
+
+	addr2, cleanup2 := sshtest.Start(t, sshtest.WithPublicKey(pubKey), sshtest.WithCmdHandler(func(cmd string) (string, string, int) {
+		return "Debian 12\n", "", 0
+	}))
+	defer cleanup2()
+
+	addr3, cleanup3 := sshtest.Start(t, sshtest.WithPublicKey(pubKey), sshtest.WithCmdHandler(func(cmd string) (string, string, int) {
+		return "Debian 11\n", "", 0
+	}))
+	defer cleanup3()
+
+	_, port1 := sshtest.ParseAddr(t, addr1)
+	_, port2 := sshtest.ParseAddr(t, addr2)
+	_, port3 := sshtest.ParseAddr(t, addr3)
+
+	pool := hssh.NewPool(
+		hssh.ClientConfig{
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			User:            "testuser",
+		},
+		map[string]hssh.HostConfig{
+			"pi-garage":     {Hostname: "127.0.0.1", Port: port1, IdentityFile: keyPath},
+			"pi-livingroom": {Hostname: "127.0.0.1", Port: port2, IdentityFile: keyPath},
+			"pi-workshop":   {Hostname: "127.0.0.1", Port: port3, IdentityFile: keyPath},
+		},
+	)
+	defer pool.Close()
+
+	allHosts := []string{"pi-garage", "pi-livingroom", "pi-workshop"}
+
+	exec := executor.New(pool, executor.WithConcurrency(5), executor.WithTimeout(10e9))
+
+	// Step 1: Run command on all hosts.
+	ctx := context.Background()
+	results := exec.Execute(ctx, allHosts, "cat /etc/os-release")
+	grouped := grouper.Group(results)
+
+	if len(grouped.Groups) != 2 {
+		t.Fatalf("expected 2 groups, got %d", len(grouped.Groups))
+	}
+
+	// Step 2: Use @differs selector to find the outlier.
+	state := &selector.State{AllHosts: allHosts, Grouped: grouped}
+	differs, err := selector.Resolve("@differs", state)
+	if err != nil {
+		t.Fatalf("resolve @differs: %v", err)
+	}
+	if len(differs) != 1 || differs[0] != "pi-workshop" {
+		t.Fatalf("@differs = %v, want [pi-workshop]", differs)
+	}
+
+	// Step 3: Run a follow-up command on the outlier only.
+	results2 := exec.Execute(ctx, differs, "apt list --upgradable")
+	if results2[0].Err != nil {
+		t.Fatalf("follow-up error: %v", results2[0].Err)
+	}
+	if results2[0].Host != "pi-workshop" {
+		t.Errorf("expected host pi-workshop, got %s", results2[0].Host)
+	}
+
+	// Step 4: Verify connections are persistent (pool should have all 3 connected).
+	for _, h := range allHosts {
+		if !pool.IsConnected(h) {
+			t.Errorf("host %s should be connected after commands", h)
+		}
+	}
+
+	t.Logf("REPL workflow test passed: ran on %d hosts, drilled into %d outliers", len(allHosts), len(differs))
+}
+
+// TestPool_SelectorGlobPattern tests the glob selector with a Pool-backed execution.
+func TestPool_SelectorGlobPattern(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+
+	pubKey, keyPath := sshtest.GenerateKey(t)
+
+	handler := func(cmd string) (string, string, int) {
+		return "ok\n", "", 0
+	}
+
+	addr1, cleanup1 := sshtest.Start(t, sshtest.WithPublicKey(pubKey), sshtest.WithCmdHandler(handler))
+	defer cleanup1()
+	addr2, cleanup2 := sshtest.Start(t, sshtest.WithPublicKey(pubKey), sshtest.WithCmdHandler(handler))
+	defer cleanup2()
+	addr3, cleanup3 := sshtest.Start(t, sshtest.WithPublicKey(pubKey), sshtest.WithCmdHandler(handler))
+	defer cleanup3()
+
+	_, port1 := sshtest.ParseAddr(t, addr1)
+	_, port2 := sshtest.ParseAddr(t, addr2)
+	_, port3 := sshtest.ParseAddr(t, addr3)
+
+	pool := hssh.NewPool(
+		hssh.ClientConfig{
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			User:            "testuser",
+		},
+		map[string]hssh.HostConfig{
+			"web-01": {Hostname: "127.0.0.1", Port: port1, IdentityFile: keyPath},
+			"web-02": {Hostname: "127.0.0.1", Port: port2, IdentityFile: keyPath},
+			"db-01":  {Hostname: "127.0.0.1", Port: port3, IdentityFile: keyPath},
+		},
+	)
+	defer pool.Close()
+
+	allHosts := []string{"web-01", "web-02", "db-01"}
+
+	// Use glob selector to target only web hosts.
+	state := &selector.State{AllHosts: allHosts}
+	webHosts, err := selector.Resolve("@web-*", state)
+	if err != nil {
+		t.Fatalf("resolve @web-*: %v", err)
+	}
+	if len(webHosts) != 2 {
+		t.Fatalf("expected 2 web hosts, got %d: %v", len(webHosts), webHosts)
+	}
+
+	exec := executor.New(pool, executor.WithConcurrency(5), executor.WithTimeout(10e9))
+	results := exec.Execute(context.Background(), webHosts, "uptime")
+
+	for _, r := range results {
+		if r.Err != nil {
+			t.Fatalf("host %s error: %v", r.Host, r.Err)
+		}
+	}
+
+	// Only web hosts should be connected; db-01 should not.
+	if pool.IsConnected("db-01") {
+		t.Error("db-01 should not be connected (not targeted)")
+	}
+
+	t.Logf("Glob selector test passed: %d hosts matched @web-*", len(webHosts))
+}
+
+// TestPool_MixedResultsWithSelectors tests the full flow with mixed results
+// (success, failure, non-zero exit) and uses @ok, @failed selectors.
+func TestPool_MixedResultsWithSelectors(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+
+	pubKey, keyPath := sshtest.GenerateKey(t)
+
+	addr1, cleanup1 := sshtest.Start(t, sshtest.WithPublicKey(pubKey), sshtest.WithCmdHandler(func(cmd string) (string, string, int) {
+		return "active\n", "", 0
+	}))
+	defer cleanup1()
+
+	addr2, cleanup2 := sshtest.Start(t, sshtest.WithPublicKey(pubKey), sshtest.WithCmdHandler(func(cmd string) (string, string, int) {
+		return "inactive\n", "unit not found\n", 3
+	}))
+	defer cleanup2()
+
+	_, port1 := sshtest.ParseAddr(t, addr1)
+	_, port2 := sshtest.ParseAddr(t, addr2)
+
+	pool := hssh.NewPool(
+		hssh.ClientConfig{
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			User:            "testuser",
+		},
+		map[string]hssh.HostConfig{
+			"web-ok":   {Hostname: "127.0.0.1", Port: port1, IdentityFile: keyPath},
+			"web-fail": {Hostname: "127.0.0.1", Port: port2, IdentityFile: keyPath},
+			"web-down": {Hostname: "127.0.0.1", Port: 1, IdentityFile: keyPath}, // unreachable
+		},
+	)
+	defer pool.Close()
+
+	allHosts := []string{"web-ok", "web-fail", "web-down"}
+	exec := executor.New(pool, executor.WithConcurrency(5), executor.WithTimeout(5e9))
+	results := exec.Execute(context.Background(), allHosts, "systemctl is-active nginx")
+
+	grouped := grouper.Group(results)
+	formatter := execui.NewFormatter(false, false, false)
+	output := formatter.Format(grouped)
+
+	t.Logf("Mixed results output:\n%s", output)
+
+	// Verify selectors resolve correctly.
+	state := &selector.State{AllHosts: allHosts, Grouped: grouped}
+
+	okHosts, err := selector.Resolve("@ok", state)
+	if err != nil {
+		t.Fatalf("resolve @ok: %v", err)
+	}
+	if len(okHosts) != 1 || okHosts[0] != "web-ok" {
+		t.Errorf("@ok = %v, want [web-ok]", okHosts)
+	}
+
+	failedHosts, err := selector.Resolve("@failed", state)
+	if err != nil {
+		t.Fatalf("resolve @failed: %v", err)
+	}
+	// web-fail (non-zero exit) and web-down (connection error) should both be @failed.
+	if len(failedHosts) != 2 {
+		t.Errorf("@failed = %v, want 2 hosts", failedHosts)
+	}
+	failedSet := map[string]bool{}
+	for _, h := range failedHosts {
+		failedSet[h] = true
+	}
+	if !failedSet["web-fail"] {
+		t.Error("@failed should include web-fail")
+	}
+	if !failedSet["web-down"] {
+		t.Error("@failed should include web-down")
+	}
+}
+
+// TestSelectorParseInput_Integration tests selector parsing combined with
+// command execution through the full pipeline.
+func TestSelectorParseInput_Integration(t *testing.T) {
+	tests := []struct {
+		input   string
+		wantSel string
+		wantCmd string
+	}{
+		{"uptime", "", "uptime"},
+		{"@differs df -h /", "@differs", "df -h /"},
+		{"@pi-backyard sudo apt autoremove -y", "@pi-backyard", "sudo apt autoremove -y"},
+		{"@differs,@failed systemctl restart nginx", "@differs,@failed", "systemctl restart nginx"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			sel, cmd := selector.ParseInput(tt.input)
+			if sel != tt.wantSel {
+				t.Errorf("sel = %q, want %q", sel, tt.wantSel)
+			}
+			if cmd != tt.wantCmd {
+				t.Errorf("cmd = %q, want %q", cmd, tt.wantCmd)
+			}
+		})
+	}
 }

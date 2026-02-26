@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/agent462/herd/internal/pathutil"
 )
 
 func TestResolveHostsFromGroup(t *testing.T) {
@@ -148,27 +150,27 @@ func TestResolveHostsGroupNotFoundNoGroups(t *testing.T) {
 	}
 }
 
-func TestExpandTilde(t *testing.T) {
-	result := expandTilde("/absolute/path")
+func TestExpandHome(t *testing.T) {
+	result := pathutil.ExpandHome("/absolute/path")
 	if result != "/absolute/path" {
-		t.Errorf("expandTilde should not modify absolute paths, got %q", result)
+		t.Errorf("pathutil.ExpandHome should not modify absolute paths, got %q", result)
 	}
 
-	result = expandTilde("")
+	result = pathutil.ExpandHome("")
 	if result != "" {
-		t.Errorf("expandTilde should return empty for empty, got %q", result)
+		t.Errorf("pathutil.ExpandHome should return empty for empty, got %q", result)
 	}
 
 	// ~otheruser paths should be returned unchanged.
-	result = expandTilde("~otheruser/.ssh/id_rsa")
+	result = pathutil.ExpandHome("~otheruser/.ssh/id_rsa")
 	if result != "~otheruser/.ssh/id_rsa" {
-		t.Errorf("expandTilde should not expand ~user paths, got %q", result)
+		t.Errorf("pathutil.ExpandHome should not expand ~user paths, got %q", result)
 	}
 
 	// ~/ should expand to home directory.
-	result = expandTilde("~/.ssh/id_rsa")
+	result = pathutil.ExpandHome("~/.ssh/id_rsa")
 	if strings.HasPrefix(result, "~") {
-		t.Errorf("expandTilde should expand ~/.ssh/id_rsa, got %q", result)
+		t.Errorf("pathutil.ExpandHome should expand ~/.ssh/id_rsa, got %q", result)
 	}
 }
 

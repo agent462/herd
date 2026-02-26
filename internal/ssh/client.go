@@ -14,6 +14,8 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 
 	sshconfig "github.com/kevinburke/ssh_config"
+
+	"github.com/agent462/herd/internal/pathutil"
 )
 
 // PasswordCallback is called when agent and key-based auth both fail.
@@ -285,8 +287,11 @@ func (c *Client) Host() string {
 }
 
 // resolveConnection builds the address, username, and auth methods for a host.
+// When values are pre-set in conf (from the config layer's host resolution),
+// ssh_config is not re-queried — this avoids double lookups that could use
+// the wrong key (resolved hostname vs original alias).
 func resolveConnection(host string, conf ClientConfig) (addr, user string, methods []ssh.AuthMethod, err error) {
-	// Resolve user.
+	// Resolve user: prefer explicit config, fall back to ssh_config, then env.
 	user = conf.User
 	if user == "" {
 		user = sshconfig.Get(host, "User")
@@ -298,7 +303,7 @@ func resolveConnection(host string, conf ClientConfig) (addr, user string, metho
 		user = "root"
 	}
 
-	// Resolve port.
+	// Resolve port: prefer explicit config, fall back to ssh_config, then 22.
 	port := conf.Port
 	if port == 0 {
 		portStr := sshconfig.Get(host, "Port")
@@ -310,13 +315,10 @@ func resolveConnection(host string, conf ClientConfig) (addr, user string, metho
 		port = 22
 	}
 
-	// Resolve hostname (ssh_config may map Host to a different Hostname).
-	hostname := sshconfig.Get(host, "Hostname")
-	if hostname == "" {
-		hostname = host
-	}
-
-	addr = net.JoinHostPort(hostname, fmt.Sprintf("%d", port))
+	// Use the host as-is for the address. The config layer already resolves
+	// SSH Hostname directives, so when called via the runner/pool the host
+	// parameter is the final hostname to dial.
+	addr = net.JoinHostPort(host, fmt.Sprintf("%d", port))
 
 	// Build auth methods in order: agent -> key files -> password.
 	methods = buildAuthMethods(host, conf)
@@ -421,7 +423,7 @@ func resolveKeyFiles(host string) []string {
 	// Check ssh_config for IdentityFile.
 	identity := sshconfig.Get(host, "IdentityFile")
 	if identity != "" {
-		expanded := expandHome(identity)
+		expanded := pathutil.ExpandHome(identity)
 		if _, err := os.Stat(expanded); err == nil {
 			files = append(files, expanded)
 		}
@@ -516,16 +518,3 @@ func newClientConn(ctx context.Context, conn net.Conn, addr string, config *ssh.
 	}
 }
 
-// expandHome expands a leading ~/ to the user's home directory.
-// Paths like ~otheruser/... are returned unchanged since we cannot
-// reliably resolve other users' home directories.
-func expandHome(path string) string {
-	if !strings.HasPrefix(path, "~/") && path != "~" {
-		return path
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return path
-	}
-	return filepath.Join(home, path[2:])
-}

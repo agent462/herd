@@ -3,12 +3,13 @@ package config
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/kevinburke/ssh_config"
+
+	"github.com/agent462/herd/internal/pathutil"
 )
 
 // Host represents a resolved SSH host with connection details.
@@ -96,13 +97,21 @@ func ResolveHosts(cfg *Config, groupName string, cliHosts []string) ([]Host, err
 	return hosts, nil
 }
 
-// MergeSSHConfig reads ~/.ssh/config and fills in User, Port, IdentityFile,
-// and ProxyJump for the host if they are not already set. Lookups use
-// the Hostname field (the actual SSH target), not the display Name.
+// MergeSSHConfig reads ~/.ssh/config and fills in Hostname, User, Port,
+// IdentityFile, and ProxyJump for the host if they are not already set.
+// Lookups use the original host Name (the SSH config alias), not the
+// resolved Hostname, so that Host directives match correctly.
 func MergeSSHConfig(host *Host) {
-	lookup := host.Hostname
-	if lookup == "" {
-		lookup = host.Name
+	// Use the original Name for ssh_config lookups so Host aliases match.
+	lookup := host.Name
+	// If the name was "user@host", use just the host part for lookup.
+	if _, hostname, ok := parseUserAtHost(lookup); ok {
+		lookup = hostname
+	}
+
+	// Resolve Hostname (ssh_config may map a Host alias to a different address).
+	if hn := sshConfigGet(lookup, "Hostname"); hn != "" {
+		host.Hostname = hn
 	}
 
 	if host.User == "" {
@@ -121,7 +130,7 @@ func MergeSSHConfig(host *Host) {
 
 	if host.IdentityFile == "" {
 		if identity := sshConfigGet(lookup, "IdentityFile"); identity != "" {
-			expanded := expandTilde(identity)
+			expanded := pathutil.ExpandHome(identity)
 			if _, err := os.Stat(expanded); err == nil {
 				host.IdentityFile = expanded
 			}
@@ -154,16 +163,3 @@ func parseUserAtHost(s string) (user, host string, ok bool) {
 	return s[:i], s[i+1:], true
 }
 
-// expandTilde expands a leading ~/ to the user's home directory.
-// Paths like ~otheruser/... are returned unchanged since we cannot
-// reliably resolve other users' home directories.
-func expandTilde(path string) string {
-	if !strings.HasPrefix(path, "~/") && path != "~" {
-		return path
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return path
-	}
-	return filepath.Join(home, path[2:])
-}

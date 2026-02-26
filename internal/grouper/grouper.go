@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/bryanhitc/herd/internal/executor"
+	"github.com/agent462/herd/internal/executor"
 )
 
 // OutputGroup represents a set of hosts that produced identical output.

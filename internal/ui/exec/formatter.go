@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bryanhitc/herd/internal/executor"
-	"github.com/bryanhitc/herd/internal/grouper"
+	"github.com/agent462/herd/internal/executor"
+	"github.com/agent462/herd/internal/grouper"
 )
 
 // ANSI color codes.
@@ -47,7 +47,7 @@ func (f *Formatter) Format(grouped *grouper.GroupedResults) string {
 	if !f.ErrorsOnly {
 		for _, g := range grouped.Groups {
 			succeeded += len(g.Hosts)
-			f.writeGroup(&b, &g)
+			f.writeGroup(&b, &g, len(grouped.Groups))
 			b.WriteString("\n")
 		}
 	} else {
@@ -109,7 +109,7 @@ func (f *Formatter) FormatJSON(results []*executor.HostResult) ([]byte, error) {
 	return json.MarshalIndent(out, "", "  ")
 }
 
-func (f *Formatter) writeGroup(b *strings.Builder, g *grouper.OutputGroup) {
+func (f *Formatter) writeGroup(b *strings.Builder, g *grouper.OutputGroup, totalGroups int) {
 	hostCount := len(g.Hosts)
 	hostWord := "hosts"
 	if hostCount == 1 {
@@ -117,7 +117,13 @@ func (f *Formatter) writeGroup(b *strings.Builder, g *grouper.OutputGroup) {
 	}
 
 	if g.IsNorm {
-		label := fmt.Sprintf(" %d %s identical:", hostCount, hostWord)
+		var label string
+		if totalGroups == 1 && hostCount == 1 {
+			// "1 host identical" doesn't make sense for a single host.
+			label = fmt.Sprintf(" %d %s:", hostCount, hostWord)
+		} else {
+			label = fmt.Sprintf(" %d %s identical:", hostCount, hostWord)
+		}
 		b.WriteString(f.colorize(label, colorGreen))
 	} else {
 		verb := "differ"

@@ -4,7 +4,7 @@ A single-binary CLI tool for running commands across multiple SSH hosts simultan
 
 ## Why Herd
 
-Tools like `pssh`, `pdsh`, and `ansible` can run commands across hosts, but none of them group identical output or show diffs between hosts. Herd treats identical output as the norm and surfaces outliers, so you can instantly see which hosts match and which differ.
+Tools like `pssh`, `pdsh`, and `ansible` can run commands across hosts, but none of them group identical output or show diffs between hosts. Herd treats identical output as the norm and surfaces outliers, so you can instantly see which hosts match and which differ -- then drill into the outliers without leaving the terminal.
 
 ## Install
 
@@ -25,7 +25,11 @@ go build -o herd ./cmd/herd/
 No config file required. Pass hosts directly on the command line:
 
 ```bash
+# One-shot command
 herd exec "cat /etc/os-release | grep PRETTY" pi-garage pi-livingroom pi-workshop
+
+# Interactive REPL with persistent connections
+herd pi-garage pi-livingroom pi-workshop --insecure
 ```
 
 Output:
@@ -46,11 +50,15 @@ One host is running a different OS version. You can see exactly what differs at 
 
 ## Usage
 
+### Mode 1: Quick Exec
+
+Run a single command and exit. Pipe-friendly.
+
 ```
 herd exec [command] [hosts...] [flags]
 ```
 
-### Flags
+#### Exec Flags
 
 | Flag | Short | Description |
 |------|-------|-------------|
@@ -61,7 +69,7 @@ herd exec [command] [hosts...] [flags]
 | `--errors-only` | | Only show failed hosts |
 | `--insecure` | | Skip host key verification |
 
-### Examples
+#### Exec Examples
 
 ```bash
 # Check which kernel version each host is running
@@ -79,6 +87,83 @@ herd exec "cat /etc/hostname" -g pis --json
 # Custom timeout and concurrency
 herd exec "apt list --upgradable 2>/dev/null | wc -l" -g all --timeout 60s --concurrency 10
 ```
+
+### Mode 2: Interactive REPL
+
+Start a persistent session with SSH connections kept open across commands. Run a command, see grouped results, then use selectors to drill into subsets.
+
+```bash
+# With a host group
+herd -g pis --insecure
+
+# With hosts on the command line
+herd pi-garage pi-livingroom pi-workshop --insecure
+```
+
+#### REPL Session Example
+
+```
+herd [pis: 4 hosts]> uptime
+ 3 hosts identical:
+   pi-garage, pi-livingroom, pi-workshop
+   12:34:56 up 14 days, 3:22, 0 users, load average: 0.02, 0.05, 0.01
+
+ 1 host differs:
+   pi-backyard
+   12:34:56 up 3 days, 1:15, 0 users, load average: 0.45, 0.38, 0.22
+
+4 succeeded
+
+herd [pis: 4 hosts]> @differs df -h /
+ 1 host identical:
+   pi-backyard
+   /dev/sda1  28G  26G  1.2G  96%  /
+
+1 succeeded
+
+herd [pis: 4 hosts]> @pi-backyard sudo apt autoremove -y
+ 1 host identical:
+   pi-backyard
+   [output...]
+
+1 succeeded
+
+herd [pis: 4 hosts]> :history
+ 1    uptime                                     (4 hosts, 3 ok, 1 differs)
+ 2    @differs df -h /                           (1 host, 1 ok)
+ 3    @pi-backyard sudo apt autoremove -y        (1 host, 1 ok)
+
+herd [pis: 4 hosts]> :quit
+```
+
+#### Selectors
+
+Prefix a command with a selector to target a subset of hosts based on the previous command's results:
+
+| Selector | Description |
+|----------|-------------|
+| `@all` | All hosts in the current group (default when no selector) |
+| `@ok` | Hosts that succeeded and matched the majority output |
+| `@differs` | Hosts whose output differed from the majority |
+| `@failed` | Hosts with non-zero exit codes or connection errors |
+| `@timeout` | Hosts that timed out |
+| `@hostname` | Exact hostname match |
+| `@glob-*` | Glob pattern match (e.g. `@pi-*`, `@web-0[12]`) |
+
+Selectors can be combined with commas: `@differs,@failed`
+
+#### REPL Commands
+
+| Command | Description |
+|---------|-------------|
+| `:quit` / `:q` | Exit the REPL |
+| `:history` / `:h` | Show command history with result summaries |
+| `:hosts` | List all hosts with connection status |
+| `:group <name>` | Switch to a different host group |
+| `:timeout <duration>` | Change the per-host timeout |
+| `:diff` | Show full diff of last command's divergent output |
+| `:last` | Re-display the last command's results |
+| `:export <file>` | Export last results to a JSON file |
 
 ### Grouped Output with Diffs
 
@@ -159,6 +244,8 @@ Herd tries authentication methods in this order:
 2. Key files (from `~/.ssh/config` IdentityFile or default locations)
 3. Password prompt (interactive terminal only)
 
+The password is prompted once and cached for the session.
+
 ## Exit Codes
 
 - `0` if all hosts succeed
@@ -169,10 +256,13 @@ Herd tries authentication methods in this order:
 ```
 internal/
   config/       Config file parsing, host group resolution, SSH config merging
-  ssh/          SSH client, auth chain, host key verification
+  ssh/          SSH client, connection pool, auth chain, ProxyJump support
   executor/     Parallel command execution with bounded concurrency
   grouper/      Output hashing, grouping by identical output, unified diffing
-  ui/exec/      Terminal output formatting (grouped, JSON, errors-only)
+  selector/     @-selector parsing and resolution against last results
+  ui/
+    exec/       Terminal output formatting (grouped, JSON, errors-only)
+    repl/       Interactive REPL with persistent connections and history
 ```
 
 ## License

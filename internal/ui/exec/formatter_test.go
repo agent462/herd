@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bryanhitc/herd/internal/executor"
-	"github.com/bryanhitc/herd/internal/grouper"
+	"github.com/agent462/herd/internal/executor"
+	"github.com/agent462/herd/internal/grouper"
 )
 
 func TestFormatGroupedIdentical(t *testing.T) {
@@ -209,8 +209,11 @@ func TestFormatSingleHost(t *testing.T) {
 	f := NewFormatter(false, false, false)
 	output := f.Format(grouped)
 
-	if !strings.Contains(output, "1 host identical:") {
-		t.Errorf("expected '1 host identical:', got:\n%s", output)
+	if !strings.Contains(output, "1 host:") {
+		t.Errorf("expected '1 host:', got:\n%s", output)
+	}
+	if strings.Contains(output, "identical") {
+		t.Errorf("single host should not say 'identical', got:\n%s", output)
 	}
 	if !strings.Contains(output, "1 succeeded") {
 		t.Errorf("expected '1 succeeded', got:\n%s", output)

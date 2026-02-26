@@ -10,7 +10,7 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"github.com/bryanhitc/herd/internal/sshtest"
+	"github.com/agent462/herd/internal/sshtest"
 )
 
 // dialTestClient creates a ClientConfig that won't use the local SSH agent

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/bryanhitc/herd/internal/executor"
+	"github.com/agent462/herd/internal/executor"
 )
 
 // HostConfig holds per-host SSH connection details.
@@ -34,25 +34,7 @@ func NewRunner(baseConf ClientConfig, hostConfs map[string]HostConfig) *SSHRunne
 func (r *SSHRunner) Run(ctx context.Context, host string, command string) *executor.HostResult {
 	result := &executor.HostResult{Host: host}
 
-	conf := r.baseConf
-	dialHost := host
-	if hc, ok := r.hostConfs[host]; ok {
-		if hc.Hostname != "" {
-			dialHost = hc.Hostname
-		}
-		if hc.User != "" {
-			conf.User = hc.User
-		}
-		if hc.Port > 0 {
-			conf.Port = hc.Port
-		}
-		if hc.IdentityFile != "" {
-			conf.IdentityFiles = []string{hc.IdentityFile}
-		}
-		if hc.ProxyJump != "" {
-			conf.ProxyJump = hc.ProxyJump
-		}
-	}
+	conf, dialHost := resolveHostConf(r.baseConf, r.hostConfs, host)
 
 	client, err := Dial(ctx, dialHost, conf)
 	if err != nil {

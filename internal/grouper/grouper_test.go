@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bryanhitc/herd/internal/executor"
+	"github.com/agent462/herd/internal/executor"
 )
 
 func TestGroupAllIdentical(t *testing.T) {
