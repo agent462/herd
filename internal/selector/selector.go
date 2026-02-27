@@ -157,8 +157,10 @@ func failedHosts(state *State) ([]string, error) {
 	for _, r := range state.Grouped.Failed {
 		hosts = append(hosts, r.Host)
 	}
-	for _, r := range state.Grouped.NonZero {
-		hosts = append(hosts, r.Host)
+	for _, g := range state.Grouped.Groups {
+		if g.ExitCode != 0 {
+			hosts = append(hosts, g.Hosts...)
+		}
 	}
 	for _, r := range state.Grouped.TimedOut {
 		hosts = append(hosts, r.Host)

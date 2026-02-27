@@ -123,8 +123,10 @@ func TestResolve_Failed(t *testing.T) {
 	state := &State{
 		AllHosts: []string{"a", "b", "c", "d"},
 		Grouped: &grouper.GroupedResults{
-			Failed:   []*executor.HostResult{{Host: "a"}},
-			NonZero:  []*executor.HostResult{{Host: "b"}},
+			Failed: []*executor.HostResult{{Host: "a"}},
+			Groups: []grouper.OutputGroup{
+				{Hosts: []string{"b"}, ExitCode: 1},
+			},
 			TimedOut: []*executor.HostResult{{Host: "c"}},
 		},
 	}

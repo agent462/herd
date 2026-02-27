@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -26,6 +27,7 @@ type ServerConfig struct {
 	NoAuth       bool
 	ForwardTCP   bool
 	CmdHandler   CmdHandler
+	SFTPRoot     string // root directory for SFTP subsystem
 }
 
 // Option configures a test SSH server.
@@ -54,6 +56,11 @@ func WithCmdHandler(h CmdHandler) Option {
 // WithForwardTCP enables direct-tcpip forwarding.
 func WithForwardTCP() Option {
 	return func(c *ServerConfig) { c.ForwardTCP = true }
+}
+
+// WithSFTP enables the SFTP subsystem rooted at the given directory.
+func WithSFTP(root string) Option {
+	return func(c *ServerConfig) { c.SFTPRoot = root }
 }
 
 // Start launches an in-process SSH server. It returns the listener address
@@ -159,6 +166,35 @@ func handleSession(ch ssh.Channel, reqs <-chan *ssh.Request, cfg *ServerConfig) 
 
 	for req := range reqs {
 		switch req.Type {
+		case "pty-req":
+			// Accept PTY requests (needed for sudo).
+			if req.WantReply {
+				req.Reply(true, nil)
+			}
+
+		case "subsystem":
+			if len(req.Payload) < 4 {
+				req.Reply(false, nil)
+				continue
+			}
+			nameLen := int(req.Payload[0])<<24 | int(req.Payload[1])<<16 | int(req.Payload[2])<<8 | int(req.Payload[3])
+			if len(req.Payload) < 4+nameLen {
+				req.Reply(false, nil)
+				continue
+			}
+			name := string(req.Payload[4 : 4+nameLen])
+
+			if name == "sftp" && cfg.SFTPRoot != "" {
+				req.Reply(true, nil)
+				server, err := sftp.NewServer(ch, sftp.WithServerWorkingDirectory(cfg.SFTPRoot))
+				if err != nil {
+					return
+				}
+				server.Serve()
+				return
+			}
+			req.Reply(false, nil)
+
 		case "exec":
 			if len(req.Payload) < 4 {
 				req.Reply(false, nil)

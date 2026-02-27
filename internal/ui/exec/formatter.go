@@ -39,27 +39,21 @@ func (f *Formatter) Format(grouped *grouper.GroupedResults) string {
 	var b strings.Builder
 
 	succeeded := 0
-	nonZero := len(grouped.NonZero)
+	nonZero := 0
 	failed := len(grouped.Failed)
 	timedOut := len(grouped.TimedOut)
 
-	// Show successful groups (unless errors-only mode).
-	if !f.ErrorsOnly {
-		for _, g := range grouped.Groups {
+	// Show groups (unless errors-only mode skips successful ones).
+	for _, g := range grouped.Groups {
+		if g.ExitCode != 0 {
+			nonZero += len(g.Hosts)
+		} else {
 			succeeded += len(g.Hosts)
+		}
+		if !f.ErrorsOnly || g.ExitCode != 0 {
 			f.writeGroup(&b, &g, len(grouped.Groups))
 			b.WriteString("\n")
 		}
-	} else {
-		for _, g := range grouped.Groups {
-			succeeded += len(g.Hosts)
-		}
-	}
-
-	// Show hosts with non-zero exit codes.
-	for _, r := range grouped.NonZero {
-		f.writeNonZero(&b, r)
-		b.WriteString("\n")
 	}
 
 	// Show failed hosts.
@@ -116,7 +110,10 @@ func (f *Formatter) writeGroup(b *strings.Builder, g *grouper.OutputGroup, total
 		hostWord = "host"
 	}
 
-	if g.IsNorm {
+	if g.ExitCode != 0 {
+		label := fmt.Sprintf(" %d %s exited with code %d:", hostCount, hostWord, g.ExitCode)
+		b.WriteString(f.colorize(label, colorRed))
+	} else if g.IsNorm {
 		var label string
 		if totalGroups == 1 && hostCount == 1 {
 			// "1 host identical" doesn't make sense for a single host.
@@ -181,34 +178,6 @@ func (f *Formatter) writeDiff(b *strings.Builder, diff string) {
 			b.WriteString(line)
 		}
 		b.WriteString("\n")
-	}
-}
-
-func (f *Formatter) writeNonZero(b *strings.Builder, r *executor.HostResult) {
-	label := fmt.Sprintf(" 1 host exited with code %d:", r.ExitCode)
-	b.WriteString(f.colorize(label, colorRed))
-	b.WriteString("\n")
-
-	b.WriteString("   ")
-	b.WriteString(f.colorize(r.Host, colorCyan))
-	b.WriteString("\n")
-
-	stdout := strings.TrimRight(string(r.Stdout), "\n")
-	if stdout != "" {
-		for _, line := range strings.Split(stdout, "\n") {
-			b.WriteString("   ")
-			b.WriteString(line)
-			b.WriteString("\n")
-		}
-	}
-
-	stderr := strings.TrimRight(string(r.Stderr), "\n")
-	if stderr != "" {
-		for _, line := range strings.Split(stderr, "\n") {
-			b.WriteString("   ")
-			b.WriteString(f.colorize("stderr: "+line, colorRed))
-			b.WriteString("\n")
-		}
 	}
 }
 

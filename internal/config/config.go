@@ -63,9 +63,9 @@ func DefaultConfig() *Config {
 	}
 }
 
-// defaultConfigPath returns the default config file path.
+// DefaultConfigPath returns the default config file path.
 // Respects $XDG_CONFIG_HOME if set, otherwise falls back to ~/.config.
-func defaultConfigPath() string {
+func DefaultConfigPath() string {
 	configDir := os.Getenv("XDG_CONFIG_HOME")
 	if configDir != "" {
 		return filepath.Join(configDir, "herd", "config.yaml")
@@ -99,7 +99,7 @@ func Load(path string) (*Config, error) {
 // LoadDefault loads the config from the default path (~/.config/herd/config.yaml).
 // If the file does not exist, it returns the default config.
 func LoadDefault() (*Config, error) {
-	path := defaultConfigPath()
+	path := DefaultConfigPath()
 	if path == "" {
 		return DefaultConfig(), nil
 	}

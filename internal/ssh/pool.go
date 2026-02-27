@@ -9,35 +9,41 @@ import (
 	"strings"
 	"sync"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/agent462/herd/internal/executor"
 )
-
-// dialResult holds the outcome of a Dial attempt, shared between goroutines
-// waiting for the same host connection.
-type dialResult struct {
-	client *Client
-	err    error
-}
 
 // Pool manages persistent SSH connections to multiple hosts.
 // It implements executor.Runner, reusing cached connections across commands
 // and automatically reconnecting on stale connections.
 type Pool struct {
-	mu        sync.Mutex
-	clients   map[string]*Client
-	inflight  map[string]chan dialResult // per-host dial coordination
-	baseConf  ClientConfig
-	hostConfs map[string]HostConfig
+	mu           sync.Mutex
+	clients      map[string]*Client
+	dialGroup    singleflight.Group // deduplicates concurrent dials to the same host
+	baseConf     ClientConfig
+	hostConfs    map[string]HostConfig
+	sudo         bool
+	sudoPassword string
 }
 
 // NewPool creates a connection pool with the given base config and per-host overrides.
 func NewPool(baseConf ClientConfig, hostConfs map[string]HostConfig) *Pool {
 	return &Pool{
 		clients:   make(map[string]*Client),
-		inflight:  make(map[string]chan dialResult),
 		baseConf:  baseConf,
 		hostConfs: hostConfs,
 	}
+}
+
+// SetSudo enables or disables sudo mode. When password is non-empty, a PTY
+// is used to deliver it. When password is empty but enable is true, commands
+// are prefixed with "sudo" for passwordless (NOPASSWD) execution.
+func (p *Pool) SetSudo(enable bool, password string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.sudo = enable
+	p.sudoPassword = password
 }
 
 // Run implements executor.Runner. It reuses a cached connection if available,
@@ -62,53 +68,54 @@ func (p *Pool) Run(ctx context.Context, host string, command string) *executor.H
 func (p *Pool) exec(ctx context.Context, host string, command string) ([]byte, []byte, int, error) {
 	client, err := p.getOrDial(ctx, host)
 	if err != nil {
-		return nil, nil, -1, fmt.Errorf("connect: %w", err)
+		return nil, nil, -1, WrapConnectError(host, fmt.Errorf("connect: %w", err))
+	}
+
+	p.mu.Lock()
+	sudo := p.sudo
+	sudoPW := p.sudoPassword
+	p.mu.Unlock()
+
+	if sudo && sudoPW != "" {
+		return client.RunCommandWithSudo(ctx, command, sudoPW)
+	}
+	if sudo {
+		return client.RunCommand(ctx, "sudo "+command)
 	}
 	return client.RunCommand(ctx, command)
 }
 
 func (p *Pool) getOrDial(ctx context.Context, host string) (*Client, error) {
 	p.mu.Lock()
-
-	// Fast path: already connected.
 	if client, ok := p.clients[host]; ok {
 		p.mu.Unlock()
 		return client, nil
 	}
+	p.mu.Unlock()
 
-	// Check if another goroutine is already dialing this host.
-	if ch, ok := p.inflight[host]; ok {
-		p.mu.Unlock()
-		// Wait for the in-flight dial to complete.
-		select {
-		case res := <-ch:
-			// Put the result back so other waiters can also read it.
-			ch <- res
-			return res.client, res.err
-		case <-ctx.Done():
-			return nil, ctx.Err()
+	// Use singleflight to deduplicate concurrent dials to the same host.
+	// DoChan lets each caller respect its own context cancellation.
+	ch := p.dialGroup.DoChan(host, func() (interface{}, error) {
+		conf, dialHost := resolveHostConf(p.baseConf, p.hostConfs, host)
+		client, err := Dial(ctx, dialHost, conf)
+		if err != nil {
+			return nil, err
 		}
-	}
-
-	// We are the first to dial this host. Create a coordination channel.
-	ch := make(chan dialResult, 1)
-	p.inflight[host] = ch
-	p.mu.Unlock()
-
-	conf, dialHost := resolveHostConf(p.baseConf, p.hostConfs, host)
-	client, err := Dial(ctx, dialHost, conf)
-
-	p.mu.Lock()
-	delete(p.inflight, host)
-	if err == nil {
+		p.mu.Lock()
 		p.clients[host] = client
+		p.mu.Unlock()
+		return client, nil
+	})
+
+	select {
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		return res.Val.(*Client), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	p.mu.Unlock()
-
-	// Broadcast result to any waiters.
-	ch <- dialResult{client: client, err: err}
-
-	return client, err
 }
 
 func (p *Pool) evict(host string) {
@@ -122,6 +129,13 @@ func (p *Pool) evict(host string) {
 	if ok {
 		client.Close()
 	}
+}
+
+// GetClient returns a connected Client for the given host, reusing a cached
+// connection if available. This is used by SFTP and other subsystems that
+// need direct access to the SSH connection.
+func (p *Pool) GetClient(ctx context.Context, host string) (*Client, error) {
+	return p.getOrDial(ctx, host)
 }
 
 // IsConnected reports whether a cached connection exists for the given host.

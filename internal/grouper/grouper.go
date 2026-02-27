@@ -27,24 +27,23 @@ type GroupedResults struct {
 	Groups   []OutputGroup
 	Failed   []*executor.HostResult
 	TimedOut []*executor.HostResult
-	// NonZero holds hosts that connected and ran the command but returned
-	// a non-zero exit code. These are grouped separately from connection
-	// failures so their output is still visible.
-	NonZero []*executor.HostResult
 }
 
-// Group categorizes host results by identical stdout, identifies the majority
-// group as the "norm", and computes unified diffs for outlier groups.
+// Group categorizes host results by identical output and exit code, identifies
+// the majority group as the "norm", and computes unified diffs for outliers.
+// Both zero and non-zero exit code results are grouped together so that (e.g.)
+// 20 hosts returning exit code 3 with the same output appear as a single group
+// rather than 20 individual entries.
 func Group(results []*executor.HostResult) *GroupedResults {
 	gr := &GroupedResults{}
 
-	// Separate failures and successful results.
+	// Separate errors from completed results.
 	type hashEntry struct {
 		hash   string
 		result *executor.HostResult
 	}
 
-	var successful []hashEntry
+	var completed []hashEntry
 
 	for _, r := range results {
 		if r.Err != nil {
@@ -56,23 +55,22 @@ func Group(results []*executor.HostResult) *GroupedResults {
 			continue
 		}
 
-		if r.ExitCode != 0 {
-			gr.NonZero = append(gr.NonZero, r)
-			continue
-		}
-
+		// Include exit code in the hash so that hosts with the same output
+		// but different exit codes land in separate groups.
 		var hashBuf []byte
 		hashBuf = append(hashBuf, r.Stdout...)
 		hashBuf = append(hashBuf, 0) // NUL separator prevents collisions
 		hashBuf = append(hashBuf, r.Stderr...)
+		hashBuf = append(hashBuf, 0)
+		hashBuf = append(hashBuf, byte(r.ExitCode>>24), byte(r.ExitCode>>16), byte(r.ExitCode>>8), byte(r.ExitCode))
 		h := sha256.Sum256(hashBuf)
-		successful = append(successful, hashEntry{
+		completed = append(completed, hashEntry{
 			hash:   fmt.Sprintf("%x", h),
 			result: r,
 		})
 	}
 
-	if len(successful) == 0 {
+	if len(completed) == 0 {
 		return gr
 	}
 
@@ -87,7 +85,7 @@ func Group(results []*executor.HostResult) *GroupedResults {
 	// Track insertion order for deterministic output.
 	var hashOrder []string
 
-	for _, entry := range successful {
+	for _, entry := range completed {
 		g, ok := groups[entry.hash]
 		if !ok {
 			g = &groupData{

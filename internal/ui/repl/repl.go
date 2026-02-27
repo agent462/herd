@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/agent462/herd/internal/config"
 	"github.com/agent462/herd/internal/executor"
 	"github.com/agent462/herd/internal/grouper"
@@ -30,14 +32,15 @@ type HistoryEntry struct {
 
 // Config holds the settings for creating a REPL session.
 type Config struct {
-	Pool        *hssh.Pool
-	AllHosts    []string
-	GroupName   string
-	HerdConfig  *config.Config
-	BaseSSHConf hssh.ClientConfig
-	Timeout     time.Duration
-	Concurrency int
-	Color       bool
+	Pool         *hssh.Pool
+	AllHosts     []string
+	GroupName    string
+	HerdConfig   *config.Config
+	BaseSSHConf  hssh.ClientConfig
+	Timeout      time.Duration
+	Concurrency  int
+	Color        bool
+	SudoPassword string // initial sudo password set at startup
 }
 
 // REPL is an interactive session that executes commands across SSH hosts.
@@ -54,23 +57,25 @@ type REPL struct {
 	color       bool
 
 	// Mutable state from last command.
-	lastResults []*executor.HostResult
-	lastGrouped *grouper.GroupedResults
-	history     []HistoryEntry
+	lastResults  []*executor.HostResult
+	lastGrouped  *grouper.GroupedResults
+	history      []HistoryEntry
+	sudoPassword string
 }
 
 // New creates a REPL with the given configuration.
 func New(c Config) *REPL {
 	r := &REPL{
-		pool:        c.Pool,
-		allHosts:    c.AllHosts,
-		groupName:   c.GroupName,
-		cfg:         c.HerdConfig,
-		baseSSHConf: c.BaseSSHConf,
-		timeout:     c.Timeout,
-		concurrency: c.Concurrency,
-		color:       c.Color,
-		formatter:   execui.NewFormatter(false, false, c.Color),
+		pool:         c.Pool,
+		allHosts:     c.AllHosts,
+		groupName:    c.GroupName,
+		cfg:          c.HerdConfig,
+		baseSSHConf:  c.BaseSSHConf,
+		timeout:      c.Timeout,
+		concurrency:  c.Concurrency,
+		color:        c.Color,
+		sudoPassword: c.SudoPassword,
+		formatter:    execui.NewFormatter(false, false, c.Color),
 	}
 	r.rebuildExecutor()
 	return r
@@ -85,6 +90,7 @@ func (r *REPL) rebuildExecutor() {
 
 // Close closes the REPL's connection pool and any associated resources.
 func (r *REPL) Close() error {
+	hssh.CloseAgent()
 	if r.pool != nil {
 		return r.pool.Close()
 	}
@@ -194,14 +200,16 @@ func (r *REPL) addHistory(input string, grouped *grouper.GroupedResults) {
 
 	for _, g := range grouped.Groups {
 		entry.HostCount += len(g.Hosts)
-		if g.IsNorm {
+		if g.ExitCode != 0 {
+			entry.FailCount += len(g.Hosts)
+		} else if g.IsNorm {
 			entry.OKCount += len(g.Hosts)
 		} else {
 			entry.DiffCount += len(g.Hosts)
 		}
 	}
-	entry.FailCount += len(grouped.Failed) + len(grouped.NonZero) + len(grouped.TimedOut)
-	entry.HostCount += entry.FailCount
+	entry.FailCount += len(grouped.Failed) + len(grouped.TimedOut)
+	entry.HostCount += len(grouped.Failed) + len(grouped.TimedOut)
 
 	r.history = append(r.history, entry)
 }
@@ -263,8 +271,28 @@ func (r *REPL) handleCommand(line string) bool {
 			fmt.Fprintf(os.Stdout, "exported to %s\n", args[0])
 		}
 
+	case ":sudo":
+		if r.sudoPassword != "" {
+			// Toggle off: disable sudo mode.
+			r.sudoPassword = ""
+			r.pool.SetSudo(false, "")
+			fmt.Fprintln(os.Stdout, "sudo mode disabled")
+		} else {
+			// Toggle on: prompt for password.
+			fmt.Fprint(os.Stderr, "BECOME password: ")
+			pw, err := term.ReadPassword(int(os.Stdin.Fd()))
+			fmt.Fprintln(os.Stderr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "read password: %v\n", err)
+				return false
+			}
+			r.sudoPassword = string(pw)
+			r.pool.SetSudo(true, r.sudoPassword)
+			fmt.Fprintln(os.Stdout, "sudo mode enabled")
+		}
+
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q (try :quit, :history, :hosts, :group, :timeout, :diff, :last, :export)\n", cmd)
+		fmt.Fprintf(os.Stderr, "unknown command %q (try :quit, :history, :hosts, :group, :timeout, :diff, :last, :export, :sudo)\n", cmd)
 	}
 
 	return false
@@ -332,6 +360,9 @@ func (r *REPL) switchGroup(name string) error {
 	}
 
 	r.pool = hssh.NewPool(r.baseSSHConf, hostConfs)
+	if r.sudoPassword != "" {
+		r.pool.SetSudo(true, r.sudoPassword)
+	}
 	r.allHosts = hostNames
 	r.groupName = name
 	r.lastResults = nil
@@ -444,7 +475,7 @@ func ParseColonCommand(line string) (cmd string, args []string) {
 
 // ValidCommands returns the list of valid colon-command names.
 func ValidCommands() []string {
-	return []string{":quit", ":q", ":history", ":h", ":hosts", ":group", ":timeout", ":diff", ":last", ":export"}
+	return []string{":quit", ":q", ":history", ":h", ":hosts", ":group", ":timeout", ":diff", ":last", ":export", ":sudo"}
 }
 
 // ParseTimeout parses a timeout duration string, exported for testing.

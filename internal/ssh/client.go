@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -265,6 +266,79 @@ func (c *Client) RunCommand(ctx context.Context, command string) (stdout, stderr
 	}
 }
 
+// RunCommandWithSudo executes a command on the connected host via sudo,
+// providing the password through a PTY session. Since a PTY merges
+// stdout and stderr into a single stream, stderr is always nil.
+func (c *Client) RunCommandWithSudo(ctx context.Context, command string, sudoPassword string) (stdout, stderr []byte, exitCode int, err error) {
+	session, err := c.sshClient.NewSession()
+	if err != nil {
+		return nil, nil, -1, fmt.Errorf("new session: %w", err)
+	}
+	defer session.Close()
+
+	// Request a PTY so sudo can read the password from stdin.
+	modes := ssh.TerminalModes{ssh.ECHO: 0}
+	if err := session.RequestPty("xterm", 80, 40, modes); err != nil {
+		return nil, nil, -1, fmt.Errorf("request pty: %w", err)
+	}
+
+	stdin, err := session.StdinPipe()
+	if err != nil {
+		return nil, nil, -1, fmt.Errorf("stdin pipe: %w", err)
+	}
+
+	// PTY merges stdout/stderr into a single stream on session.Stdout.
+	var outBuf safeBuffer
+	session.Stdout = &outBuf
+
+	if err := session.Start(fmt.Sprintf("sudo -S %s", command)); err != nil {
+		return nil, nil, -1, fmt.Errorf("start command: %w", err)
+	}
+
+	// Write the password followed by a newline, then close stdin.
+	fmt.Fprintf(stdin, "%s\n", sudoPassword)
+	stdin.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- session.Wait()
+	}()
+
+	select {
+	case <-ctx.Done():
+		session.Signal(ssh.SIGKILL)
+		session.Close()
+		return nil, nil, -1, ctx.Err()
+	case err := <-done:
+		output := stripSudoPrompt(outBuf.Bytes())
+		if err != nil {
+			if exitErr, ok := err.(*ssh.ExitError); ok {
+				return output, nil, exitErr.ExitStatus(), nil
+			}
+			return output, nil, -1, err
+		}
+		return output, nil, 0, nil
+	}
+}
+
+// stripSudoPrompt removes sudo password prompt lines from command output.
+// It preserves all other whitespace to keep output consistent with non-sudo
+// execution for diffing/grouping purposes.
+func stripSudoPrompt(output []byte) []byte {
+	var cleaned [][]byte
+	for _, line := range bytes.Split(output, []byte("\n")) {
+		trimmed := bytes.TrimSpace(line)
+		if bytes.HasPrefix(trimmed, []byte("[sudo] password for")) {
+			continue
+		}
+		if bytes.Equal(trimmed, []byte("Password:")) {
+			continue
+		}
+		cleaned = append(cleaned, line)
+	}
+	return bytes.Join(cleaned, []byte("\n"))
+}
+
 // Close closes the underlying SSH connection and any jump-host connections
 // in reverse order (innermost first).
 func (c *Client) Close() error {
@@ -284,6 +358,12 @@ func (c *Client) Close() error {
 // Host returns the hostname this client is connected to.
 func (c *Client) Host() string {
 	return c.host
+}
+
+// SSHClient returns the underlying *ssh.Client for use by SFTP and other
+// subsystems that need direct access to the SSH connection.
+func (c *Client) SSHClient() *ssh.Client {
+	return c.sshClient
 }
 
 // resolveConnection builds the address, username, and auth methods for a host.

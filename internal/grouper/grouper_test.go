@@ -165,7 +165,7 @@ func TestGroupHostsSorted(t *testing.T) {
 	}
 }
 
-func TestGroupNonZeroExitSeparated(t *testing.T) {
+func TestGroupNonZeroExitGrouped(t *testing.T) {
 	results := []*executor.HostResult{
 		{Host: "host-a", Stdout: []byte("ok\n"), ExitCode: 0},
 		{Host: "host-b", Stdout: []byte("ok\n"), ExitCode: 0},
@@ -175,23 +175,58 @@ func TestGroupNonZeroExitSeparated(t *testing.T) {
 
 	gr := Group(results)
 
-	if len(gr.Groups) != 1 {
-		t.Fatalf("expected 1 successful group, got %d", len(gr.Groups))
+	// 3 groups: exit-0 (norm), exit-1, exit-2
+	if len(gr.Groups) != 3 {
+		t.Fatalf("expected 3 groups, got %d", len(gr.Groups))
+	}
+	// Norm should be the exit-0 group (largest).
+	if !gr.Groups[0].IsNorm {
+		t.Error("first group should be norm")
 	}
 	if len(gr.Groups[0].Hosts) != 2 {
-		t.Errorf("expected 2 hosts in successful group, got %d", len(gr.Groups[0].Hosts))
+		t.Errorf("expected 2 hosts in norm group, got %d", len(gr.Groups[0].Hosts))
 	}
-	if len(gr.NonZero) != 2 {
-		t.Fatalf("expected 2 non-zero hosts, got %d", len(gr.NonZero))
+	if gr.Groups[0].ExitCode != 0 {
+		t.Errorf("norm group exit code = %d, want 0", gr.Groups[0].ExitCode)
 	}
-	if gr.NonZero[0].Host != "host-c" {
-		t.Errorf("expected non-zero host 'host-c', got %q", gr.NonZero[0].Host)
+
+	// Verify the non-zero groups have correct exit codes.
+	exitCodes := map[int]bool{}
+	for _, g := range gr.Groups[1:] {
+		exitCodes[g.ExitCode] = true
 	}
-	if gr.NonZero[0].ExitCode != 1 {
-		t.Errorf("expected exit code 1, got %d", gr.NonZero[0].ExitCode)
+	if !exitCodes[1] {
+		t.Error("expected a group with exit code 1")
 	}
-	if gr.NonZero[1].Host != "host-d" {
-		t.Errorf("expected non-zero host 'host-d', got %q", gr.NonZero[1].Host)
+	if !exitCodes[2] {
+		t.Error("expected a group with exit code 2")
+	}
+}
+
+func TestGroupNonZeroIdenticalGrouped(t *testing.T) {
+	// Multiple hosts with the same non-zero exit code and output should be grouped.
+	results := []*executor.HostResult{
+		{Host: "host-a", Stdout: []byte("ok\n"), ExitCode: 0},
+		{Host: "host-b", Stdout: []byte("inactive\n"), ExitCode: 3},
+		{Host: "host-c", Stdout: []byte("inactive\n"), ExitCode: 3},
+		{Host: "host-d", Stdout: []byte("inactive\n"), ExitCode: 3},
+	}
+
+	gr := Group(results)
+
+	if len(gr.Groups) != 2 {
+		t.Fatalf("expected 2 groups, got %d", len(gr.Groups))
+	}
+	// Norm should be the exit-3 group (3 hosts > 1 host).
+	norm := gr.Groups[0]
+	if !norm.IsNorm {
+		t.Error("first group should be norm")
+	}
+	if len(norm.Hosts) != 3 {
+		t.Errorf("norm group should have 3 hosts, got %d", len(norm.Hosts))
+	}
+	if norm.ExitCode != 3 {
+		t.Errorf("norm group exit code = %d, want 3", norm.ExitCode)
 	}
 }
 

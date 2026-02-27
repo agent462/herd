@@ -214,11 +214,21 @@ func TestFullPipeline_MixedResults(t *testing.T) {
 		t.Error("expected at least one group for successful hosts")
 	}
 
-	// web-03 returned exit code 3, should be in NonZero.
-	if len(grouped.NonZero) != 1 {
-		t.Errorf("expected 1 non-zero host, got %d", len(grouped.NonZero))
-	} else if grouped.NonZero[0].Host != "web-03" {
-		t.Errorf("expected non-zero host 'web-03', got %q", grouped.NonZero[0].Host)
+	// web-03 returned exit code 3, should be in a group with non-zero exit code.
+	foundNonZero := false
+	for _, g := range grouped.Groups {
+		if g.ExitCode != 0 {
+			if len(g.Hosts) != 1 || g.Hosts[0] != "web-03" {
+				t.Errorf("expected non-zero group with [web-03], got %v", g.Hosts)
+			}
+			if g.ExitCode != 3 {
+				t.Errorf("expected exit code 3, got %d", g.ExitCode)
+			}
+			foundNonZero = true
+		}
+	}
+	if !foundNonZero {
+		t.Error("expected a group with non-zero exit code for web-03")
 	}
 
 	formatter := execui.NewFormatter(false, false, false)
