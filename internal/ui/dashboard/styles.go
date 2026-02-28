@@ -74,4 +74,23 @@ var (
 
 	helpDescStyle = lipgloss.NewStyle().
 			Foreground(colorSubtle)
+
+	// Tab bar styles.
+	tabActiveStyle = lipgloss.NewStyle().
+			Foreground(colorWhite).
+			Background(lipgloss.Color("#333333")).
+			Bold(true).
+			Padding(0, 1)
+
+	tabInactiveStyle = lipgloss.NewStyle().
+				Foreground(colorSubtle).
+				Padding(0, 1)
+
+	tabBarStyle = lipgloss.NewStyle().
+			BorderBottom(true).
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderForeground(colorSubtle)
+
+	tabScrollIndicator = lipgloss.NewStyle().
+				Foreground(colorCyan)
 )

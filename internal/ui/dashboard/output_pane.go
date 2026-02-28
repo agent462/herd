@@ -13,22 +13,32 @@ import (
 	"github.com/agent462/herd/internal/grouper"
 )
 
-// outputPane wraps a bubbles/viewport for displaying grouped command results.
+// tabBarHeight is the number of rows consumed by the tab bar.
+const tabBarHeight = 2 // 1 row for tabs + 1 row for bottom border
+
+// outputPane wraps a bubbles/viewport for displaying grouped command results,
+// with a tab bar for switching between the diff view and per-host output.
 type outputPane struct {
-	viewport     viewport.Model
-	width        int
-	height       int
-	expandedHost string // when non-empty, show only this host's output
+	viewport viewport.Model
+	tabBar   tabBar
+	width    int
+	height   int
+
+	// Cached data for re-rendering when tabs switch.
+	lastGrouped *grouper.GroupedResults
+	lastResults []*executor.HostResult
+	allHosts    []string
 }
 
 func newOutputPane(width, height int) outputPane {
 	contentWidth := width - 2 // account for pane border
 	vp := viewport.New(
 		viewport.WithWidth(contentWidth),
-		viewport.WithHeight(height-2), // account for border
+		viewport.WithHeight(height-2-tabBarHeight), // border + tab bar
 	)
 	return outputPane{
 		viewport: vp,
+		tabBar:   newTabBar(contentWidth),
 		width:    contentWidth,
 		height:   height,
 	}
@@ -41,13 +51,14 @@ func (o *outputPane) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (o *outputPane) View() string {
-	// Hard-clip the viewport output to prevent any line from exceeding the
-	// content width.  The viewport pads lines but does not truncate, so this
-	// catches edge cases where styled/ANSI content is wider than expected.
+	bar := o.tabBar.View()
+	var content string
 	if o.width > 0 {
-		return lipgloss.NewStyle().MaxWidth(o.width).Render(o.viewport.View())
+		content = lipgloss.NewStyle().MaxWidth(o.width).Render(o.viewport.View())
+	} else {
+		content = o.viewport.View()
 	}
-	return o.viewport.View()
+	return lipgloss.JoinVertical(lipgloss.Left, bar, content)
 }
 
 // setContent truncates each line to the viewport width (ANSI-aware) before
@@ -68,37 +79,105 @@ func (o *outputPane) Resize(width, height int) {
 	o.width = width - 2 // content width inside pane border
 	o.height = height
 	o.viewport.SetWidth(o.width)
-	o.viewport.SetHeight(height - 2)
+	o.viewport.SetHeight(height - 2 - tabBarHeight)
+	o.tabBar.Resize(o.width)
 }
 
+// SetGroupedResults updates the output pane with new execution results.
+// Rebuilds the tab bar and re-renders the active tab's content.
 func (o *outputPane) SetGroupedResults(grouped *grouper.GroupedResults, results []*executor.HostResult) {
+	o.lastGrouped = grouped
+	o.lastResults = results
+
 	if grouped == nil {
 		o.setContent("No results yet. Type a command below.")
 		return
 	}
 
-	if o.expandedHost != "" {
-		o.renderHostOutput(o.expandedHost, grouped, results)
-		return
+	// Collect all hosts in order from results.
+	hosts := make([]string, 0, len(results))
+	for _, r := range results {
+		hosts = append(hosts, r.Host)
 	}
+	o.allHosts = hosts
+	o.tabBar.SetTabs(hosts)
 
-	o.renderGrouped(grouped)
+	o.renderActiveTab()
 }
 
+// renderActiveTab dispatches to the correct renderer based on the active tab.
+func (o *outputPane) renderActiveTab() {
+	id := o.tabBar.ActiveID()
+	if id == "diff" {
+		if o.lastGrouped != nil {
+			o.renderGrouped(o.lastGrouped)
+		}
+	} else {
+		o.renderHostOutput(id, o.lastGrouped, o.lastResults)
+	}
+}
+
+// NextTab switches to the next tab and re-renders.
+func (o *outputPane) NextTab() {
+	o.tabBar.Next()
+	o.renderActiveTab()
+}
+
+// PrevTab switches to the previous tab and re-renders.
+func (o *outputPane) PrevTab() {
+	o.tabBar.Prev()
+	o.renderActiveTab()
+}
+
+// SetTabIndex jumps to a tab by index and re-renders.
+func (o *outputPane) SetTabIndex(index int) {
+	o.tabBar.SetActive(index)
+	o.renderActiveTab()
+}
+
+// ActivateHostTab switches to a specific host's tab.
+// Returns true if the host was found in the tab list.
+func (o *outputPane) ActivateHostTab(hostname string) bool {
+	if o.tabBar.SetActiveByID(hostname) {
+		o.renderActiveTab()
+		return true
+	}
+	return false
+}
+
+// ActivateDiffTab switches back to the diff output tab.
+func (o *outputPane) ActivateDiffTab() {
+	o.tabBar.SetActive(0)
+	o.renderActiveTab()
+}
+
+// ExpandHost is a backwards-compatible wrapper that activates the host's tab.
 func (o *outputPane) ExpandHost(name string, grouped *grouper.GroupedResults, results []*executor.HostResult) {
-	o.expandedHost = name
-	o.renderHostOutput(name, grouped, results)
-}
-
-func (o *outputPane) CollapseHost(grouped *grouper.GroupedResults, results []*executor.HostResult) {
-	o.expandedHost = ""
-	if grouped != nil {
-		o.renderGrouped(grouped)
+	o.lastGrouped = grouped
+	o.lastResults = results
+	// Ensure tabs are populated.
+	if len(o.tabBar.tabs) <= 1 {
+		hosts := make([]string, 0, len(results))
+		for _, r := range results {
+			hosts = append(hosts, r.Host)
+		}
+		o.allHosts = hosts
+		o.tabBar.SetTabs(hosts)
 	}
+	o.tabBar.SetActiveByID(name)
+	o.renderActiveTab()
 }
 
+// CollapseHost is a backwards-compatible wrapper that returns to the diff tab.
+func (o *outputPane) CollapseHost(grouped *grouper.GroupedResults, results []*executor.HostResult) {
+	o.lastGrouped = grouped
+	o.lastResults = results
+	o.ActivateDiffTab()
+}
+
+// IsExpanded returns true if viewing a specific host (not the diff tab).
 func (o *outputPane) IsExpanded() bool {
-	return o.expandedHost != ""
+	return o.tabBar.ActiveID() != "diff"
 }
 
 func (o *outputPane) renderGrouped(grouped *grouper.GroupedResults) {

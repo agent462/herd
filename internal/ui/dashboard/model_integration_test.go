@@ -1,3 +1,5 @@
+//go:build integration
+
 package dashboard
 
 import (
@@ -14,10 +16,6 @@ import (
 // TestDashboardWithLiveHosts exercises the dashboard model against real SSH hosts.
 // It verifies health checks, command execution, and message routing work end-to-end.
 func TestDashboardWithLiveHosts(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping live SSH test in short mode")
-	}
-
 	rawHosts := []string{"signal@192.168.86.59", "signal@192.168.86.238"}
 
 	baseConf := ssh.ClientConfig{

@@ -222,16 +222,20 @@ func (m Model) handleHostTableKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	switch {
 	case key.Code == tea.KeyEnter:
-		// Expand selected host in output pane.
+		// Switch to the selected host's tab in the output pane.
 		host := m.hostTable.SelectedHost()
 		if host != "" && m.lastGrouped != nil {
-			m.outputPane.ExpandHost(host, m.lastGrouped, m.lastResults)
+			if m.outputPane.ActivateHostTab(host) {
+				// Only switch focus when the host tab actually exists.
+				m.hostTable.Blur()
+				m.focused = paneOutput
+			}
 		}
 		return m, nil
 
 	case key.Code == tea.KeyEscape:
 		if m.outputPane.IsExpanded() {
-			m.outputPane.CollapseHost(m.lastGrouped, m.lastResults)
+			m.outputPane.ActivateDiffTab()
 			return m, nil
 		}
 
@@ -258,9 +262,23 @@ func (m Model) handleOutputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	if key.Code == tea.KeyEscape {
 		if m.outputPane.IsExpanded() {
-			m.outputPane.CollapseHost(m.lastGrouped, m.lastResults)
+			m.outputPane.ActivateDiffTab()
 			return m, nil
 		}
+	}
+
+	// Tab switching with [ and ].
+	switch msg.String() {
+	case "[":
+		m.outputPane.PrevTab()
+		return m, nil
+	case "]":
+		m.outputPane.NextTab()
+		return m, nil
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		idx := int(msg.String()[0]-'0') - 1 // 1-based to 0-based
+		m.outputPane.SetTabIndex(idx)
+		return m, nil
 	}
 
 	// Forward to viewport for scrolling.

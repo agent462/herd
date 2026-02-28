@@ -22,14 +22,35 @@ func renderStatusBar(totalHosts, connectedHosts int, width int, groupName string
 
 	left += " │ " + connStr + disconnStr
 
-	right := helpKeyStyle.Render("Tab") + helpDescStyle.Render(" focus") +
-		"  " + helpKeyStyle.Render("f") + helpDescStyle.Render(" filter") +
-		"  " + helpKeyStyle.Render("d") + helpDescStyle.Render(" diff") +
-		"  " + helpKeyStyle.Render("?") + helpDescStyle.Render(" help") +
-		"  " + helpKeyStyle.Render("q") + helpDescStyle.Render(" quit") + " "
+	// Build right-side hints, dropping lowest-priority items (from the end)
+	// when they don't fit alongside the left side.
+	type hint struct{ key, desc string }
+	// Ordered by priority — first items survive at narrow widths.
+	hints := []hint{
+		{"q", "quit"},
+		{"Tab", "focus"},
+		{"[ ]", "tabs"},
+		{"?", "help"},
+		{"f", "filter"},
+		{"d", "diff"},
+	}
 
-	// Pad middle.
-	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
+	rightPadding := 1 // trailing space
+	stylePadding := statusBarStyle.GetHorizontalPadding()
+	avail := width - lipgloss.Width(left) - rightPadding - stylePadding
+	right := ""
+	for _, h := range hints {
+		item := "  " + helpKeyStyle.Render(h.key) + helpDescStyle.Render(" "+h.desc)
+		if lipgloss.Width(right)+lipgloss.Width(item) > avail {
+			break
+		}
+		right += item
+	}
+	right += " "
+
+	// Pad middle to fill the content area (total width minus style padding).
+	contentWidth := width - stylePadding
+	gap := contentWidth - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 0 {
 		gap = 0
 	}
@@ -47,9 +68,11 @@ func renderHelpOverlay(width, height int) string {
   Tab          Cycle focus: hosts → output → input
   q / Ctrl+C   Quit (when not typing)
   j / k        Navigate host table up/down
-  Enter        Host table: expand host output
+  Enter        Host table: jump to host tab
                Command input: execute command
-  Esc          Close overlay / collapse expanded view
+  Esc          Close overlay / back to diff tab
+  [ / ]        Previous / next output tab
+  1-9          Jump to output tab by number
   f            Toggle host filter bar
   d            Show diff for selected divergent host
   ?            Toggle this help
@@ -65,8 +88,8 @@ func renderHelpOverlay(width, height int) string {
 `
 
 	style := lipgloss.NewStyle().
-		Width(width - 4).
-		Height(height - 2).
+		Width(width-4).
+		Height(height-2).
 		Padding(1, 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(colorCyan)
