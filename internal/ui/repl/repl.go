@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +17,8 @@ import (
 	"github.com/agent462/herd/internal/config"
 	"github.com/agent462/herd/internal/executor"
 	"github.com/agent462/herd/internal/grouper"
+	"github.com/agent462/herd/internal/parser"
+	"github.com/agent462/herd/internal/recipe"
 	"github.com/agent462/herd/internal/selector"
 	hssh "github.com/agent462/herd/internal/ssh"
 	execui "github.com/agent462/herd/internal/ui/exec"
@@ -271,6 +274,20 @@ func (r *REPL) handleCommand(line string) bool {
 			fmt.Fprintf(os.Stdout, "exported to %s\n", args[0])
 		}
 
+	case ":recipe":
+		if len(args) == 0 {
+			r.listRecipes()
+		} else {
+			r.runRecipe(args[0])
+		}
+
+	case ":parse":
+		if len(args) == 0 {
+			fmt.Fprintln(os.Stderr, "usage: :parse <name> (built-in: disk, free, uptime)")
+			return false
+		}
+		r.parseLastResults(args[0])
+
 	case ":sudo":
 		if r.sudoPassword != "" {
 			// Toggle off: disable sudo mode.
@@ -292,7 +309,7 @@ func (r *REPL) handleCommand(line string) bool {
 		}
 
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q (try :quit, :history, :hosts, :group, :timeout, :diff, :last, :export, :sudo)\n", cmd)
+		fmt.Fprintf(os.Stderr, "unknown command %q (try :quit, :history, :hosts, :group, :timeout, :diff, :last, :export, :sudo, :recipe, :parse)\n", cmd)
 	}
 
 	return false
@@ -415,6 +432,99 @@ func (r *REPL) exportJSON(filename string) error {
 	return os.WriteFile(filename, append(data, '\n'), 0644)
 }
 
+func (r *REPL) listRecipes() {
+	merged := recipe.MergedRecipes(r.cfg)
+	if len(merged) == 0 {
+		fmt.Fprintln(os.Stdout, "no recipes defined")
+		return
+	}
+
+	names := make([]string, 0, len(merged))
+	for name := range merged {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		rec := merged[name]
+		tag := ""
+		if recipe.IsBuiltin(name) && (r.cfg == nil || r.cfg.Recipes == nil || r.cfg.Recipes[name].Steps == nil) {
+			tag = " (built-in)"
+		}
+		if rec.Description != "" {
+			fmt.Fprintf(os.Stdout, "  %-20s %s (%d steps)%s\n", name, rec.Description, len(rec.Steps), tag)
+		} else {
+			fmt.Fprintf(os.Stdout, "  %-20s (%d steps)%s\n", name, len(rec.Steps), tag)
+		}
+	}
+}
+
+func (r *REPL) runRecipe(name string) {
+	rec, _, ok := recipe.ResolveRecipe(name, r.cfg)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown recipe %q\n", name)
+		return
+	}
+
+	steps := make([]recipe.Step, len(rec.Steps))
+	for i, raw := range rec.Steps {
+		steps[i] = recipe.ParseStep(raw)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	runner := recipe.New(r.exec, r.allHosts)
+	results, err := runner.Run(ctx, steps)
+
+	for i, sr := range results {
+		fmt.Fprintf(os.Stdout, "\n=== Step %d/%d: %s ===\n", i+1, len(steps), sr.Step.Command)
+		if sr.Step.Selector != "" {
+			fmt.Fprintf(os.Stdout, "    Selector: %s → %d %s\n", sr.Step.Selector, len(sr.Hosts), plural("host", len(sr.Hosts)))
+		}
+		fmt.Fprint(os.Stdout, r.formatter.Format(sr.Grouped))
+	}
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "recipe error: %v\n", err)
+		return
+	}
+
+	// Update REPL state with the last step's results.
+	if len(results) > 0 {
+		last := results[len(results)-1]
+		r.lastResults = last.Results
+		r.lastGrouped = last.Grouped
+	}
+}
+
+func (r *REPL) parseLastResults(name string) {
+	if r.lastResults == nil {
+		fmt.Fprintln(os.Stderr, "no previous command results")
+		return
+	}
+
+	// Resolve parser: built-in first, then config.
+	builtins := parser.BuiltinParsers()
+	var p *parser.OutputParser
+	if bp, ok := builtins[name]; ok {
+		p = bp
+	} else if pcfg, ok := r.cfg.Parsers[name]; ok {
+		var err error
+		p, err = parser.New(pcfg.Extract)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "parser %q: %v\n", name, err)
+			return
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "unknown parser %q (built-in: disk, free, uptime)\n", name)
+		return
+	}
+
+	parsed := p.ParseAll(r.lastResults)
+	fmt.Fprint(os.Stdout, parser.FormatTable(parsed, r.color))
+}
+
 func plural(word string, n int) string {
 	if n == 1 {
 		return word
@@ -475,7 +585,7 @@ func ParseColonCommand(line string) (cmd string, args []string) {
 
 // ValidCommands returns the list of valid colon-command names.
 func ValidCommands() []string {
-	return []string{":quit", ":q", ":history", ":h", ":hosts", ":group", ":timeout", ":diff", ":last", ":export", ":sudo"}
+	return []string{":quit", ":q", ":history", ":h", ":hosts", ":group", ":timeout", ":diff", ":last", ":export", ":sudo", ":recipe", ":parse"}
 }
 
 // ParseTimeout parses a timeout duration string, exported for testing.

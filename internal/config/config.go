@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -11,8 +12,29 @@ import (
 
 // Config represents the top-level herd configuration.
 type Config struct {
-	Groups   map[string]Group `yaml:"groups"`
-	Defaults Defaults         `yaml:"defaults"`
+	Groups   map[string]Group   `yaml:"groups"`
+	Defaults Defaults           `yaml:"defaults"`
+	Recipes  map[string]Recipe  `yaml:"recipes,omitempty"`
+	Parsers  map[string]Parser  `yaml:"parsers,omitempty"`
+}
+
+// Recipe defines a named multi-step command sequence.
+type Recipe struct {
+	Description string   `yaml:"description,omitempty"`
+	Steps       []string `yaml:"steps"`
+}
+
+// Parser defines named field-extraction rules for structured output parsing.
+type Parser struct {
+	Description string        `yaml:"description,omitempty"`
+	Extract     []ExtractRule `yaml:"extract"`
+}
+
+// ExtractRule defines how to extract a single field from command output.
+type ExtractRule struct {
+	Field   string `yaml:"field"`
+	Pattern string `yaml:"pattern,omitempty"` // regex with capture group
+	Column  int    `yaml:"column,omitempty"`  // extract column by index (1-based)
 }
 
 // Group defines a named set of hosts with optional overrides.
@@ -111,6 +133,26 @@ func LoadDefault() (*Config, error) {
 	return Load(path)
 }
 
+// Save writes the config to the given file path as YAML.
+// It creates parent directories if they don't exist.
+func Save(path string, cfg *Config) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("write config file: %w", err)
+	}
+
+	return nil
+}
+
 // Validate checks the config for logical errors.
 func (c *Config) Validate() error {
 	if c.Defaults.Concurrency < 0 {
@@ -131,6 +173,33 @@ func (c *Config) Validate() error {
 		}
 		if group.Timeout.Duration < 0 {
 			return fmt.Errorf("group %q has negative timeout: %s", name, group.Timeout)
+		}
+	}
+
+	nameRe := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	for name, recipe := range c.Recipes {
+		if !nameRe.MatchString(name) {
+			return fmt.Errorf("recipe name %q must match [a-zA-Z0-9_-]+", name)
+		}
+		if len(recipe.Steps) == 0 {
+			return fmt.Errorf("recipe %q has no steps", name)
+		}
+	}
+
+	for name, parser := range c.Parsers {
+		if !nameRe.MatchString(name) {
+			return fmt.Errorf("parser name %q must match [a-zA-Z0-9_-]+", name)
+		}
+		if len(parser.Extract) == 0 {
+			return fmt.Errorf("parser %q has no extract rules", name)
+		}
+		for i, rule := range parser.Extract {
+			if rule.Field == "" {
+				return fmt.Errorf("parser %q rule %d has empty field name", name, i)
+			}
+			if rule.Pattern == "" && rule.Column == 0 {
+				return fmt.Errorf("parser %q rule %d (%s) must have pattern or column", name, i, rule.Field)
+			}
 		}
 	}
 

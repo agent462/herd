@@ -204,6 +204,138 @@ func TestLoadDefaultNoFile(t *testing.T) {
 	}
 }
 
+func TestRecipeConfig(t *testing.T) {
+	content := `
+groups:
+  test:
+    hosts:
+      - host1
+
+recipes:
+  deploy:
+    description: "Deploy the app"
+    steps:
+      - "git pull"
+      - "systemctl restart app"
+  health-check:
+    steps:
+      - "curl -s localhost:8080/health"
+`
+	cfg := loadFromString(t, content)
+
+	if len(cfg.Recipes) != 2 {
+		t.Fatalf("expected 2 recipes, got %d", len(cfg.Recipes))
+	}
+
+	deploy := cfg.Recipes["deploy"]
+	if deploy.Description != "Deploy the app" {
+		t.Errorf("deploy.Description = %q, want %q", deploy.Description, "Deploy the app")
+	}
+	if len(deploy.Steps) != 2 {
+		t.Errorf("deploy steps = %d, want 2", len(deploy.Steps))
+	}
+	if deploy.Steps[0] != "git pull" {
+		t.Errorf("deploy.Steps[0] = %q, want %q", deploy.Steps[0], "git pull")
+	}
+}
+
+func TestRecipeValidation(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Groups["test"] = Group{Hosts: []string{"host1"}}
+
+	// Empty steps should fail.
+	cfg.Recipes = map[string]Recipe{
+		"empty": {Steps: []string{}},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected validation error for recipe with no steps")
+	}
+
+	// Invalid name should fail.
+	cfg.Recipes = map[string]Recipe{
+		"bad name!": {Steps: []string{"echo hi"}},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected validation error for invalid recipe name")
+	}
+}
+
+func TestParserConfig(t *testing.T) {
+	content := `
+groups:
+  test:
+    hosts:
+      - host1
+
+parsers:
+  disk-usage:
+    description: "Parse df output"
+    extract:
+      - field: filesystem
+        pattern: '^(\S+)'
+      - field: use_pct
+        column: 5
+`
+	cfg := loadFromString(t, content)
+
+	if len(cfg.Parsers) != 1 {
+		t.Fatalf("expected 1 parser, got %d", len(cfg.Parsers))
+	}
+
+	p := cfg.Parsers["disk-usage"]
+	if len(p.Extract) != 2 {
+		t.Fatalf("expected 2 extract rules, got %d", len(p.Extract))
+	}
+	if p.Extract[0].Field != "filesystem" {
+		t.Errorf("rule[0].Field = %q, want %q", p.Extract[0].Field, "filesystem")
+	}
+	if p.Extract[1].Column != 5 {
+		t.Errorf("rule[1].Column = %d, want 5", p.Extract[1].Column)
+	}
+}
+
+func TestParserValidation(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Groups["test"] = Group{Hosts: []string{"host1"}}
+
+	// No extract rules should fail.
+	cfg.Parsers = map[string]Parser{
+		"empty": {Extract: []ExtractRule{}},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected validation error for parser with no rules")
+	}
+
+	// Rule missing both pattern and column.
+	cfg.Parsers = map[string]Parser{
+		"bad": {Extract: []ExtractRule{{Field: "x"}}},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected validation error for rule without pattern or column")
+	}
+}
+
+func TestSaveConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sub", "config.yaml")
+
+	cfg := DefaultConfig()
+	cfg.Groups["web"] = Group{Hosts: []string{"web-01", "web-02"}}
+
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if len(loaded.Groups["web"].Hosts) != 2 {
+		t.Errorf("loaded group has %d hosts, want 2", len(loaded.Groups["web"].Hosts))
+	}
+}
+
 // loadFromString is a test helper that writes content to a temp file, loads it,
 // and fails the test if loading fails.
 func loadFromString(t *testing.T, content string) *Config {

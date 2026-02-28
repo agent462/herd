@@ -1,6 +1,6 @@
 # Herd
 
-A single-binary CLI tool for running commands across multiple SSH hosts simultaneously. Herd executes commands in parallel, groups identical output together, and shows unified diffs for hosts that differ.
+A single-binary CLI tool for running commands across multiple SSH hosts simultaneously. Herd executes commands in parallel, groups identical output together, and shows unified diffs for hosts that differ. Includes recipes for multi-step workflows, output parsers for structured extraction, CIDR network discovery, and SSH tunneling.
 
 ## Why Herd
 
@@ -70,6 +70,7 @@ herd exec [command] [hosts...] [flags]
 | `--insecure` | | Skip host key verification |
 | `--sudo` | | Run commands with sudo |
 | `--ask-become-pass` | | Prompt for sudo password |
+| `--parse` | | Parse output with a named parser (built-in: `disk`, `free`, `uptime`) |
 
 #### Exec Examples
 
@@ -94,6 +95,15 @@ herd exec "systemctl restart nginx" -g web --sudo --ask-become-pass
 
 # Preview what would run without connecting
 herd exec "uname -r" -g pis --dry-run
+
+# Parse disk usage into a table
+herd exec "df -h" -g pis --parse disk
+
+# Parse memory usage into a table
+herd exec "free -h" -g pis --parse free
+
+# Parse uptime into a table
+herd exec "uptime" -g pis --parse uptime
 ```
 
 ### Interactive REPL
@@ -180,6 +190,8 @@ Selectors can be combined with commas: `@differs,@failed`
 | `:last` | Re-display the last command's results |
 | `:export <file>` | Export last results to a JSON file |
 | `:sudo` | Toggle sudo mode on/off (prompts for password when enabling) |
+| `:recipe [name]` | Run a recipe, or list available recipes if no name given |
+| `:parse <name>` | Re-parse last command output with a named parser |
 
 ### Push & Pull (SFTP File Transfer)
 
@@ -253,6 +265,200 @@ The output pane uses tabs to switch between the grouped diff view and individual
 | `?` | Toggle help overlay |
 | `q` / `Ctrl+C` | Quit |
 
+### Recipes
+
+Recipes are named multi-step command sequences defined in your config file. Each step runs sequentially, and selectors like `@ok`, `@differs`, and `@failed` in later steps reference the previous step's results.
+
+```bash
+# List available recipes
+herd recipe --list
+
+# Run a recipe
+herd recipe deploy -g web
+
+# Run with sudo
+herd recipe restart-stack -g pis --sudo --ask-become-pass
+```
+
+#### Recipe Flags
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--list` | | List available recipes |
+| `--group` | `-g` | Use a host group from config |
+| `--concurrency` | | Max parallel connections (default 20) |
+| `--timeout` | | Per-host timeout |
+| `--insecure` | | Skip host key verification |
+| `--sudo` | | Run commands with sudo |
+| `--ask-become-pass` | | Prompt for sudo password |
+
+#### Recipe Example
+
+With this config:
+
+```yaml
+recipes:
+  deploy:
+    description: "Deploy and verify"
+    steps:
+      - "git -C /opt/app pull"
+      - "systemctl restart app"
+      - "@failed systemctl status app"
+```
+
+Running `herd recipe deploy -g web` will:
+1. Pull latest code on all hosts
+2. Restart the app service on all hosts
+3. Show service status only for hosts where the restart failed
+
+#### Recipe Output
+
+```
+=== Step 1/3: git -C /opt/app pull ===
+ 3 hosts identical:
+   web-01, web-02, web-03
+   Already up to date.
+
+=== Step 2/3: systemctl restart app ===
+ 2 hosts identical:
+   web-01, web-02
+   [ok]
+
+ 1 host differs:
+   web-03
+   Job for app.service failed.
+
+=== Step 3/3: systemctl status app ===
+    Selector: @failed → 1 host
+ 1 host identical:
+   web-03
+   ● app.service - App
+   ...
+```
+
+### Output Parsers
+
+Parse command output into structured tables. Herd includes built-in parsers for common commands and supports custom parsers in the config file.
+
+```bash
+# Parse disk usage into a table
+herd exec "df -h" -g pis --parse disk
+
+# Parse memory info
+herd exec "free -h" -g pis --parse free
+
+# Parse uptime and load averages
+herd exec "uptime" -g pis --parse uptime
+```
+
+#### Parser Output
+
+```
+HOST            FILESYSTEM  SIZE  USED  AVAIL  USE_PCT  MOUNT
+--------------  ----------  ----  ----  -----  -------  -----
+pi-garage       /dev/sda1   50G   20G   28G    42%      /
+pi-livingroom   /dev/sda1   50G   18G   30G    38%      /
+pi-workshop     /dev/sda1   50G   45G   3.2G   93%      /
+```
+
+In the REPL, use `:parse` to re-parse the last command's output:
+
+```
+herd [pis: 4 hosts]> uptime
+...
+herd [pis: 4 hosts]> :parse uptime
+HOST           UPTIME            USERS  LOAD1  LOAD5  LOAD15
+-------------  ----------------  -----  -----  -----  ------
+pi-garage      14 days,  3:22    2      0.02   0.05   0.01
+pi-livingroom  14 days,  3:20    1      0.01   0.03   0.00
+pi-workshop    3 days,  1:15     1      0.45   0.38   0.22
+```
+
+#### Built-in Parsers
+
+| Name | Command | Fields |
+|------|---------|--------|
+| `disk` | `df -h` | filesystem, size, used, avail, use_pct, mount |
+| `free` | `free -h` | total, used, free, available |
+| `uptime` | `uptime` | uptime, users, load1, load5, load15 |
+
+Custom parsers can be defined in the config file (see [Configuration](#configuration)).
+
+### Discover
+
+Scan a network range for SSH hosts. Useful for initial setup or finding new hosts on a network.
+
+```bash
+# Scan a /24 subnet for SSH hosts
+herd discover --cidr 192.168.1.0/24
+
+# Scan a custom port with higher concurrency
+herd discover --cidr 10.0.0.0/16 --port 2222 --concurrency 100 --timeout 5s
+
+# Save discovered hosts to a config group
+herd discover --cidr 192.168.1.0/24 --save lab
+```
+
+#### Discover Flags
+
+| Flag | Description |
+|------|-------------|
+| `--cidr` | CIDR range to scan (required) |
+| `--port` | TCP port to probe (default 22) |
+| `--timeout` | Per-host connection timeout (default 2s) |
+| `--concurrency` | Max concurrent connections (default 50) |
+| `--save` | Save discovered hosts to a named group in config |
+
+#### Discover Output
+
+```
+Scanning 192.168.1.0/24 port 22...
+  192.168.1.10:22
+  192.168.1.15:22
+  192.168.1.20:22
+
+3 hosts found
+```
+
+When `--save` is used, discovered hosts are added to (or replace) the named group in your config file.
+
+### Tunnel
+
+Create local SSH tunnels (port forwarding) to multiple hosts simultaneously. Each host gets an incrementing local port.
+
+```bash
+# Forward local port 8080 to port 80 on each host
+herd tunnel -L 8080:localhost:80 -g web
+
+# Forward to a database port
+herd tunnel -L 3306:localhost:3306 -g db
+```
+
+#### Tunnel Flags
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `-L` | | Forward spec: `localPort:remoteHost:remotePort` (required) |
+| `--group` | `-g` | Use a host group from config |
+| `--concurrency` | | Max concurrent connections (default 20) |
+| `--timeout` | | Per-host timeout |
+| `--insecure` | | Skip host key verification |
+
+#### Tunnel Output
+
+With 3 hosts in the `web` group:
+
+```
+Opening tunnels...
+  127.0.0.1:8080 → web-01 → localhost:80
+  127.0.0.1:8081 → web-02 → localhost:80
+  127.0.0.1:8082 → web-03 → localhost:80
+
+3 tunnels active. Press Ctrl-C to close.
+```
+
+Each host gets its own local port, incrementing from the base port in the `-L` spec.
+
 ### Grouped Output with Diffs
 
 When hosts return different output, herd shows a unified diff against the majority:
@@ -298,6 +504,7 @@ herd exec "hostname" -g pis --json
 |---------|-------------|
 | `herd list` | List all configured host groups and their members |
 | `herd config` | Show the resolved configuration as YAML |
+| `herd discover --cidr <range>` | Scan a network for SSH hosts |
 | `herd version` | Print version, commit, and build date |
 | `herd completion [bash\|zsh\|fish\|powershell]` | Generate shell completion scripts |
 
@@ -331,9 +538,31 @@ defaults:
   concurrency: 20
   timeout: 30s
   output: grouped
+
+recipes:
+  deploy:
+    description: "Deploy and verify"
+    steps:
+      - "git -C /opt/app pull"
+      - "systemctl restart app"
+      - "@failed systemctl status app"
+  health-check:
+    description: "Quick health check"
+    steps:
+      - "systemctl is-active nginx"
+      - "curl -s localhost:8080/health"
+
+parsers:
+  nginx-conns:
+    description: "Parse nginx active connections"
+    extract:
+      - field: active
+        pattern: 'Active connections:\s+(\d+)'
+      - field: requests
+        pattern: '\s+(\d+)\s+\d+\s+\d+\s*$'
 ```
 
-Groups support per-group `user` and `timeout` overrides.
+Groups support per-group `user` and `timeout` overrides. Recipe names and parser names must match `[a-zA-Z0-9_-]+`.
 
 ### SSH Config
 
@@ -379,6 +608,10 @@ internal/
   grouper/      Output hashing, grouping by identical output, unified diffing
   selector/     @-selector parsing and resolution against last results
   transfer/     SFTP push/pull with parallel transfers and checksum verification
+  recipe/       Multi-step recipe runner with selector propagation
+  parser/       Output field extraction with regex/column rules and table formatting
+  discover/     CIDR network scanning for SSH host discovery
+  tunnel/       SSH port forwarding (local tunnels) with multi-host support
   ui/
     exec/       Terminal output formatting (grouped, JSON, errors-only)
     repl/       Interactive REPL with persistent connections and history
