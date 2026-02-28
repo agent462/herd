@@ -225,7 +225,7 @@ herd ping web-01 web-02 web-03 --timeout 10s
 
 ### Dashboard
 
-Launch a full-screen TUI for interactive fleet monitoring. Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea), the dashboard shows a host table, command input, grouped output, and diff views in a single terminal.
+Launch a full-screen TUI for interactive fleet monitoring. Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea), the dashboard shows a host table, command input, and a tabbed output pane in a single terminal.
 
 ```bash
 herd dashboard -g pis --insecure
@@ -235,6 +235,23 @@ herd dashboard -g web --sudo --ask-become-pass --health-interval 30s
 | Flag | Description |
 |------|-------------|
 | `--health-interval` | Interval between health checks (default `10s`) |
+
+The output pane uses tabs to switch between the grouped diff view and individual host output. After running a command, a **Diff** tab shows the grouped/diff summary and one tab per host shows that host's raw output.
+
+#### Dashboard Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `Tab` | Cycle focus: command input → host table → output pane |
+| `Enter` | Execute command (input) / jump to host tab (host table) |
+| `Esc` | Close overlay / return to diff tab |
+| `[` / `]` | Previous / next output tab |
+| `1`–`9` | Jump to output tab by number |
+| `j` / `k` | Navigate host table up/down |
+| `f` | Toggle host filter bar |
+| `d` | Show diff for selected divergent host |
+| `?` | Toggle help overlay |
+| `q` / `Ctrl+C` | Quit |
 
 ### Grouped Output with Diffs
 
