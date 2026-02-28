@@ -307,10 +307,8 @@ func TestRun_StepResultFields(t *testing.T) {
 
 func TestRun_WithFailedHosts(t *testing.T) {
 	// Step 1: host-c returns an error. Step 2: @failed targets host-c.
-	callCount := 0
 	runner := &mockRunner{
 		handler: func(ctx context.Context, host string, command string) *executor.HostResult {
-			callCount++
 			if command == "check" && host == "host-c" {
 				return &executor.HostResult{
 					Host:     host,
