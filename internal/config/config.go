@@ -37,11 +37,48 @@ type ExtractRule struct {
 	Column  int    `yaml:"column,omitempty"`  // extract column by index (1-based)
 }
 
+// HostEntry represents a host in a group config. It supports two YAML forms:
+//   - A bare string: "pi-garage" (no tags)
+//   - A map: {host: "pi-garage", tags: [debian12, arm64]}
+type HostEntry struct {
+	Host string   `yaml:"host"`
+	Tags []string `yaml:"tags,omitempty"`
+}
+
+// UnmarshalYAML handles both bare string and map forms of host entries.
+func (h *HostEntry) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		h.Host = value.Value
+		h.Tags = nil
+		return nil
+	}
+	type raw HostEntry // avoid infinite recursion
+	var r raw
+	if err := value.Decode(&r); err != nil {
+		return fmt.Errorf("invalid host entry: %w", err)
+	}
+	if r.Host == "" {
+		return fmt.Errorf("host entry missing required 'host' field")
+	}
+	*h = HostEntry(r)
+	return nil
+}
+
+// MarshalYAML serializes as a bare string when there are no tags,
+// preserving the compact format for existing configs.
+func (h HostEntry) MarshalYAML() (interface{}, error) {
+	if len(h.Tags) == 0 {
+		return h.Host, nil
+	}
+	type raw HostEntry
+	return raw(h), nil
+}
+
 // Group defines a named set of hosts with optional overrides.
 type Group struct {
-	Hosts   []string `yaml:"hosts"`
-	User    string   `yaml:"user,omitempty"`
-	Timeout Duration `yaml:"timeout,omitempty"`
+	Hosts   []HostEntry `yaml:"hosts"`
+	User    string      `yaml:"user,omitempty"`
+	Timeout Duration    `yaml:"timeout,omitempty"`
 }
 
 // Defaults holds default settings.
@@ -167,16 +204,26 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid output mode %q, must be one of: grouped, json", c.Defaults.Output)
 	}
 
+	nameRe := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
 	for name, group := range c.Groups {
 		if len(group.Hosts) == 0 {
 			return fmt.Errorf("group %q has no hosts", name)
+		}
+		for i, entry := range group.Hosts {
+			if entry.Host == "" {
+				return fmt.Errorf("group %q host entry %d has empty hostname", name, i)
+			}
+			for _, tag := range entry.Tags {
+				if !nameRe.MatchString(tag) {
+					return fmt.Errorf("group %q host %q has invalid tag %q: must match [a-zA-Z0-9_-]+", name, entry.Host, tag)
+				}
+			}
 		}
 		if group.Timeout.Duration < 0 {
 			return fmt.Errorf("group %q has negative timeout: %s", name, group.Timeout)
 		}
 	}
-
-	nameRe := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 	for name, recipe := range c.Recipes {
 		if !nameRe.MatchString(name) {
 			return fmt.Errorf("recipe name %q must match [a-zA-Z0-9_-]+", name)

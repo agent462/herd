@@ -37,6 +37,7 @@ type HistoryEntry struct {
 type Config struct {
 	Pool         *hssh.Pool
 	AllHosts     []string
+	HostTags     map[string][]string // host name -> tags from config
 	GroupName    string
 	HerdConfig   *config.Config
 	BaseSSHConf  hssh.ClientConfig
@@ -52,6 +53,7 @@ type REPL struct {
 	exec        *executor.Executor
 	formatter   *execui.Formatter
 	allHosts    []string
+	hostTags    map[string][]string // host name -> tags
 	groupName   string
 	cfg         *config.Config
 	baseSSHConf hssh.ClientConfig
@@ -71,6 +73,7 @@ func New(c Config) *REPL {
 	r := &REPL{
 		pool:         c.Pool,
 		allHosts:     c.AllHosts,
+		hostTags:     c.HostTags,
 		groupName:    c.GroupName,
 		cfg:          c.HerdConfig,
 		baseSSHConf:  c.BaseSSHConf,
@@ -160,6 +163,7 @@ func (r *REPL) Run(ctx context.Context) error {
 		state := &selector.State{
 			AllHosts: r.allHosts,
 			Grouped:  r.lastGrouped,
+			HostTags: r.hostTags,
 		}
 		hosts, err := selector.Resolve(sel, state)
 		if err != nil {
@@ -288,6 +292,9 @@ func (r *REPL) handleCommand(line string) bool {
 		}
 		r.parseLastResults(args[0])
 
+	case ":tags":
+		r.showTags()
+
 	case ":sudo":
 		if r.sudoPassword != "" {
 			// Toggle off: disable sudo mode.
@@ -309,7 +316,7 @@ func (r *REPL) handleCommand(line string) bool {
 		}
 
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q (try :quit, :history, :hosts, :group, :timeout, :diff, :last, :export, :sudo, :recipe, :parse)\n", cmd)
+		fmt.Fprintf(os.Stderr, "unknown command %q (try :quit, :history, :hosts, :group, :tags, :timeout, :diff, :last, :export, :sudo, :recipe, :parse)\n", cmd)
 	}
 
 	return false
@@ -355,6 +362,36 @@ func (r *REPL) showHosts() {
 	}
 }
 
+func (r *REPL) showTags() {
+	if len(r.hostTags) == 0 {
+		fmt.Fprintln(os.Stdout, "no tags defined")
+		return
+	}
+
+	// Count hosts per tag.
+	counts := make(map[string]int)
+	for _, tags := range r.hostTags {
+		for _, t := range tags {
+			counts[t]++
+		}
+	}
+
+	if len(counts) == 0 {
+		fmt.Fprintln(os.Stdout, "no tags defined")
+		return
+	}
+
+	names := make([]string, 0, len(counts))
+	for name := range counts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		fmt.Fprintf(os.Stdout, "  %-20s %d %s\n", name, counts[name], plural("host", counts[name]))
+	}
+}
+
 func (r *REPL) switchGroup(name string) error {
 	hosts, err := config.ResolveHosts(r.cfg, name, nil)
 	if err != nil {
@@ -384,6 +421,14 @@ func (r *REPL) switchGroup(name string) error {
 	r.groupName = name
 	r.lastResults = nil
 	r.lastGrouped = nil
+
+	// Rebuild tag map from resolved hosts.
+	hostTags := make(map[string][]string, len(hosts))
+	for _, h := range hosts {
+		hostTags[h.Name] = h.Tags
+	}
+	r.hostTags = hostTags
+
 	r.rebuildExecutor()
 
 	fmt.Fprintf(os.Stdout, "switched to group %q (%d %s)\n",
@@ -585,7 +630,7 @@ func ParseColonCommand(line string) (cmd string, args []string) {
 
 // ValidCommands returns the list of valid colon-command names.
 func ValidCommands() []string {
-	return []string{":quit", ":q", ":history", ":h", ":hosts", ":group", ":timeout", ":diff", ":last", ":export", ":sudo", ":recipe", ":parse"}
+	return []string{":quit", ":q", ":history", ":h", ":hosts", ":group", ":tags", ":timeout", ":diff", ":last", ":export", ":sudo", ":recipe", ":parse"}
 }
 
 // ParseTimeout parses a timeout duration string, exported for testing.

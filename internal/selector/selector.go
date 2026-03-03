@@ -13,6 +13,7 @@ import (
 type State struct {
 	AllHosts []string
 	Grouped  *grouper.GroupedResults // nil if no command has been run yet
+	HostTags map[string][]string    // host name -> tags (nil if tags not available)
 }
 
 // ParseInput splits a REPL input line into a selector part and a command part.
@@ -116,6 +117,10 @@ func resolveSingle(sel string, state *State) ([]string, error) {
 	case "timeout":
 		return timeoutHosts(state)
 	default:
+		// Check for @tag:tagname syntax.
+		if strings.HasPrefix(name, "tag:") {
+			return tagHosts(name[4:], state)
+		}
 		return matchHosts(name, state.AllHosts)
 	}
 }
@@ -178,6 +183,49 @@ func timeoutHosts(state *State) ([]string, error) {
 		hosts = append(hosts, r.Host)
 	}
 	return hosts, nil
+}
+
+// tagHosts returns hosts that have (or don't have) a specific tag.
+// Supports negation: @tag:!staging excludes hosts with the "staging" tag.
+func tagHosts(tagExpr string, state *State) ([]string, error) {
+	if state.HostTags == nil {
+		return nil, fmt.Errorf("@tag: tag information not available")
+	}
+	if tagExpr == "" {
+		return nil, fmt.Errorf("@tag: tag name required (use @tag:name)")
+	}
+
+	negate := false
+	if strings.HasPrefix(tagExpr, "!") {
+		negate = true
+		tagExpr = tagExpr[1:]
+	}
+	if tagExpr == "" {
+		return nil, fmt.Errorf("@tag: tag name required (use @tag:name or @tag:!name)")
+	}
+
+	var matched []string
+	for _, h := range state.AllHosts {
+		tags := state.HostTags[h]
+		has := false
+		for _, t := range tags {
+			if t == tagExpr {
+				has = true
+				break
+			}
+		}
+		if (has && !negate) || (!has && negate) {
+			matched = append(matched, h)
+		}
+	}
+
+	if len(matched) == 0 {
+		if negate {
+			return nil, fmt.Errorf("no hosts match @tag:!%s", tagExpr)
+		}
+		return nil, fmt.Errorf("no hosts match @tag:%s", tagExpr)
+	}
+	return matched, nil
 }
 
 // matchHosts returns hosts whose names match the given glob pattern.

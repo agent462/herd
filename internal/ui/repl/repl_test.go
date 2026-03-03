@@ -141,7 +141,7 @@ func TestValidCommands(t *testing.T) {
 
 	required := map[string]bool{
 		":quit": false, ":q": false, ":history": false, ":h": false,
-		":hosts": false, ":group": false, ":timeout": false,
+		":hosts": false, ":group": false, ":tags": false, ":timeout": false,
 		":diff": false, ":last": false, ":export": false,
 	}
 	for _, c := range cmds {

@@ -261,6 +261,126 @@ func TestResolve_GlobBrackets(t *testing.T) {
 	assertHosts(t, hosts, []string{"web-01", "web-02"})
 }
 
+func TestParseInput_TagSelector(t *testing.T) {
+	sel, cmd := ParseInput("@tag:prod uptime")
+	if sel != "@tag:prod" {
+		t.Errorf("sel = %q, want %q", sel, "@tag:prod")
+	}
+	if cmd != "uptime" {
+		t.Errorf("cmd = %q, want %q", cmd, "uptime")
+	}
+}
+
+func TestResolve_TagSelector(t *testing.T) {
+	state := &State{
+		AllHosts: []string{"a", "b", "c"},
+		HostTags: map[string][]string{
+			"a": {"prod", "arm64"},
+			"b": {"staging"},
+			"c": {"prod", "amd64"},
+		},
+	}
+	hosts, err := Resolve("@tag:prod", state)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertHosts(t, hosts, []string{"a", "c"})
+}
+
+func TestResolve_TagSelectorNegated(t *testing.T) {
+	state := &State{
+		AllHosts: []string{"a", "b", "c"},
+		HostTags: map[string][]string{
+			"a": {"prod"},
+			"b": {"staging"},
+			"c": {"prod"},
+		},
+	}
+	hosts, err := Resolve("@tag:!prod", state)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertHosts(t, hosts, []string{"b"})
+}
+
+func TestResolve_TagSelectorNoMatch(t *testing.T) {
+	state := &State{
+		AllHosts: []string{"a", "b"},
+		HostTags: map[string][]string{
+			"a": {"prod"},
+			"b": {"staging"},
+		},
+	}
+	_, err := Resolve("@tag:nonexistent", state)
+	if err == nil {
+		t.Error("expected error for non-matching tag selector")
+	}
+}
+
+func TestResolve_CombinedWithTag(t *testing.T) {
+	state := &State{
+		AllHosts: []string{"a", "b", "c"},
+		HostTags: map[string][]string{
+			"a": {"prod"},
+			"b": {"staging"},
+			"c": {"prod"},
+		},
+		Grouped: &grouper.GroupedResults{
+			Groups: []grouper.OutputGroup{
+				{Hosts: []string{"a", "c"}, IsNorm: true},
+				{Hosts: []string{"b"}, IsNorm: false},
+			},
+		},
+	}
+	// Union of @differs (b) and @tag:prod (a, c)
+	hosts, err := Resolve("@differs,@tag:prod", state)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertHosts(t, hosts, []string{"b", "a", "c"})
+}
+
+func TestResolve_TagBareExclamation(t *testing.T) {
+	state := &State{
+		AllHosts: []string{"a", "b"},
+		HostTags: map[string][]string{
+			"a": {"prod"},
+			"b": {"staging"},
+		},
+	}
+	// @tag:! is malformed — should error, not silently return all hosts.
+	_, err := Resolve("@tag:!", state)
+	if err == nil {
+		t.Error("expected error for @tag:! (bare negation with no tag name)")
+	}
+}
+
+func TestResolve_TagEmptyName(t *testing.T) {
+	state := &State{
+		AllHosts: []string{"a", "b"},
+		HostTags: map[string][]string{
+			"a": {"prod"},
+			"b": {"staging"},
+		},
+	}
+	// @tag: with no tag name should error.
+	_, err := Resolve("@tag:", state)
+	if err == nil {
+		t.Error("expected error for @tag: with empty tag name")
+	}
+}
+
+func TestResolve_TagNoTagInfo(t *testing.T) {
+	state := &State{
+		AllHosts: []string{"a"},
+		HostTags: nil, // no tag info available
+	}
+	_, err := Resolve("@tag:prod", state)
+	if err == nil {
+		t.Error("expected error when HostTags is nil")
+	}
+}
+
 func assertHosts(t *testing.T, got, want []string) {
 	t.Helper()
 	if len(got) != len(want) {

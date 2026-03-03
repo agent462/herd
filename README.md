@@ -1,6 +1,6 @@
 # Herd
 
-A single-binary CLI tool for running commands across multiple SSH hosts simultaneously. Herd executes commands in parallel, groups identical output together, and shows unified diffs for hosts that differ. Includes recipes for multi-step workflows, output parsers for structured extraction, CIDR network discovery, and SSH tunneling.
+A single-binary CLI tool for running commands across multiple SSH hosts simultaneously. Herd executes commands in parallel, groups identical output together, and shows unified diffs for hosts that differ. Includes host tags for cross-group querying, recipes for multi-step workflows, output parsers for structured extraction, CIDR network discovery, and SSH tunneling.
 
 ## Why Herd
 
@@ -70,6 +70,7 @@ herd exec [command] [hosts...] [flags]
 | `--insecure` | | Skip host key verification |
 | `--sudo` | | Run commands with sudo |
 | `--ask-become-pass` | | Prompt for sudo password |
+| `--tag` | `-t` | Filter hosts by tag expression (e.g. `prod`, `debian12,!staging`) |
 | `--parse` | | Parse output with a named parser (built-in: `disk`, `free`, `uptime`) |
 
 #### Exec Examples
@@ -104,6 +105,15 @@ herd exec "free -h" -g pis --parse free
 
 # Parse uptime into a table
 herd exec "uptime" -g pis --parse uptime
+
+# Run across all hosts tagged "prod", regardless of group
+herd exec "uname -r" --tag prod
+
+# Intersection: only arm64 hosts in the pis group
+herd exec "uname -m" -g pis --tag arm64
+
+# Combine tags: prod AND debian12, but NOT staging
+herd exec "cat /etc/os-release" --tag "prod,debian12,!staging"
 ```
 
 ### Interactive REPL
@@ -174,8 +184,10 @@ Prefix a command with a selector to target a subset of hosts based on the previo
 | `@timeout` | Hosts that timed out |
 | `@hostname` | Exact hostname match |
 | `@glob-*` | Glob pattern match (e.g. `@pi-*`, `@web-0[12]`) |
+| `@tag:name` | Hosts with the given tag (e.g. `@tag:prod`) |
+| `@tag:!name` | Hosts WITHOUT the given tag (e.g. `@tag:!staging`) |
 
-Selectors can be combined with commas: `@differs,@failed`
+Selectors can be combined with commas: `@differs,@failed`, `@differs,@tag:prod`
 
 #### REPL Commands
 
@@ -192,6 +204,7 @@ Selectors can be combined with commas: `@differs,@failed`
 | `:sudo` | Toggle sudo mode on/off (prompts for password when enabling) |
 | `:recipe [name]` | Run a recipe, or list available recipes if no name given |
 | `:parse <name>` | Re-parse last command output with a named parser |
+| `:tags` | List all host tags with counts |
 
 ### Push & Pull (SFTP File Transfer)
 
@@ -200,6 +213,9 @@ Transfer files to or from multiple hosts in parallel over SFTP.
 ```bash
 # Push a local file to all hosts in a group
 herd push ./config.yaml:/etc/app/config.yaml -g webservers
+
+# Push to hosts with a specific tag
+herd push ./config.yaml:/etc/app/config.yaml --tag prod
 
 # Pull a remote file from all hosts (saved to ./results/<hostname>/)
 herd pull /var/log/syslog -g webservers
@@ -225,6 +241,7 @@ Check TCP reachability of hosts without performing an SSH handshake. Fast connec
 ```bash
 herd ping -g pis
 herd ping web-01 web-02 web-03 --timeout 10s
+herd ping --tag prod
 ```
 
 ```
@@ -247,6 +264,7 @@ herd dashboard -g web --sudo --ask-become-pass --health-interval 30s
 | Flag | Description |
 |------|-------------|
 | `--health-interval` | Interval between health checks (default `10s`) |
+| `--tag` / `-t` | Filter hosts by tag expression |
 
 The output pane uses tabs to switch between the grouped diff view and individual host output. After running a command, a **Diff** tab shows the grouped/diff summary and one tab per host shows that host's raw output.
 
@@ -291,6 +309,7 @@ herd recipe restart-stack -g pis --sudo --ask-become-pass
 | `--insecure` | | Skip host key verification |
 | `--sudo` | | Run commands with sudo |
 | `--ask-become-pass` | | Prompt for sudo password |
+| `--tag` | `-t` | Filter hosts by tag expression |
 
 #### Recipe Example
 
@@ -408,6 +427,7 @@ herd discover --cidr 192.168.1.0/24 --save lab
 | `--timeout` | Per-host connection timeout (default 2s) |
 | `--concurrency` | Max concurrent connections (default 50) |
 | `--save` | Save discovered hosts to a named group in config |
+| `--tag` | Comma-separated tags to apply to discovered hosts (used with `--save`) |
 
 #### Discover Output
 
@@ -420,7 +440,11 @@ Scanning 192.168.1.0/24 port 22...
 3 hosts found
 ```
 
-When `--save` is used, discovered hosts are added to (or replace) the named group in your config file.
+When `--save` is used, discovered hosts are added to (or replace) the named group in your config file. Combine with `--tag` to auto-tag discovered hosts:
+
+```bash
+herd discover --cidr 192.168.1.0/24 --save lab --tag discovered,lan
+```
 
 ### Tunnel
 
@@ -443,6 +467,7 @@ herd tunnel -L 3306:localhost:3306 -g db
 | `--concurrency` | | Max concurrent connections (default 20) |
 | `--timeout` | | Per-host timeout |
 | `--insecure` | | Skip host key verification |
+| `--tag` | `-t` | Filter hosts by tag expression |
 
 #### Tunnel Output
 
@@ -503,6 +528,8 @@ herd exec "hostname" -g pis --json
 | Command | Description |
 |---------|-------------|
 | `herd list` | List all configured host groups and their members |
+| `herd list --tags` | Show a summary of all tags with host counts |
+| `herd list --tag <expr>` | List hosts matching a tag expression |
 | `herd config` | Show the resolved configuration as YAML |
 | `herd discover --cidr <range>` | Scan a network for SSH hosts |
 | `herd version` | Print version, commit, and build date |
@@ -562,7 +589,71 @@ parsers:
         pattern: '\s+(\d+)\s+\d+\s+\d+\s*$'
 ```
 
-Groups support per-group `user` and `timeout` overrides. Recipe names and parser names must match `[a-zA-Z0-9_-]+`.
+Groups support per-group `user` and `timeout` overrides. Recipe names, parser names, and tag names must match `[a-zA-Z0-9_-]+`.
+
+### Host Tags
+
+Hosts can be annotated with tags for cross-group querying. Tags are defined per-host using the structured YAML form. Bare strings (no tags) and tagged entries can be mixed freely in the same group:
+
+```yaml
+groups:
+  pis:
+    hosts:
+      - pi-garage                           # bare string, no tags
+      - host: pi-livingroom
+        tags: [debian12, arm64]
+      - host: pi-workshop
+        tags: [debian12, arm64, staging]
+    user: pi
+  web:
+    hosts:
+      - host: web-01
+        tags: [prod, amd64]
+      - host: web-02
+        tags: [prod, amd64]
+      - host: web-03
+        tags: [staging, amd64]
+    user: deploy
+```
+
+#### Querying by Tag
+
+Use `--tag`/`-t` on any command to select hosts by tags across all groups:
+
+```bash
+# All hosts tagged "prod", regardless of group
+herd exec "uname -r" --tag prod
+
+# Tags are AND-ed: must have both "prod" AND "amd64"
+herd exec "uname -r" --tag prod,amd64
+
+# Negate with "!": prod AND NOT staging
+herd exec "uname -r" --tag "prod,!staging"
+```
+
+When `--tag` is combined with `--group`, the result is the **intersection** — only hosts in the group that also match the tag expression:
+
+```bash
+# Only arm64 hosts in the pis group
+herd exec "uname -m" -g pis --tag arm64
+```
+
+In the REPL, use `@tag:name` as a selector:
+
+```
+herd [pis: 4 hosts]> @tag:debian12 cat /etc/os-release | head -1
+herd [pis: 4 hosts]> @tag:!staging uptime
+```
+
+#### Listing Tags
+
+```bash
+# Show all tags with host counts
+herd list --tags
+
+# List hosts matching a tag expression
+herd list --tag prod
+```
 
 ### SSH Config
 
@@ -591,7 +682,7 @@ herd completion zsh > "${fpath[1]}/_herd"
 herd completion fish | source
 ```
 
-Group names are completed dynamically for the `-g` flag.
+Group names and tag names are completed dynamically for the `-g` and `--tag` flags.
 
 ## Exit Codes
 
@@ -602,7 +693,7 @@ Group names are completed dynamically for the `-g` flag.
 
 ```
 internal/
-  config/       Config file parsing, host group resolution, SSH config merging
+  config/       Config file parsing, host group resolution, tag matching, SSH config merging
   ssh/          SSH client, connection pool, auth chain, sudo, ProxyJump support
   executor/     Parallel command execution with bounded concurrency
   grouper/      Output hashing, grouping by identical output, unified diffing

@@ -12,7 +12,7 @@ func TestResolveHostsFromGroup(t *testing.T) {
 	cfg := &Config{
 		Groups: map[string]Group{
 			"pis": {
-				Hosts: []string{"pi-garage", "pi-livingroom", "pi-workshop"},
+				Hosts: strHosts("pi-garage", "pi-livingroom", "pi-workshop"),
 			},
 		},
 		Defaults: DefaultConfig().Defaults,
@@ -52,7 +52,7 @@ func TestResolveHostsMergesGroupAndCLI(t *testing.T) {
 	cfg := &Config{
 		Groups: map[string]Group{
 			"web": {
-				Hosts: []string{"web-01", "web-02"},
+				Hosts: strHosts("web-01", "web-02"),
 			},
 		},
 		Defaults: DefaultConfig().Defaults,
@@ -81,7 +81,7 @@ func TestResolveHostsMergesGroupAndCLI(t *testing.T) {
 func TestResolveHostsGroupNotFound(t *testing.T) {
 	cfg := &Config{
 		Groups: map[string]Group{
-			"pis": {Hosts: []string{"pi-1"}},
+			"pis": {Hosts: strHosts("pi-1")},
 		},
 		Defaults: DefaultConfig().Defaults,
 	}
@@ -105,7 +105,7 @@ func TestResolveHostsGroupUserApplied(t *testing.T) {
 	cfg := &Config{
 		Groups: map[string]Group{
 			"web": {
-				Hosts: []string{"web-01", "web-02"},
+				Hosts: strHosts("web-01", "web-02"),
 				User:  "deploy",
 			},
 		},
@@ -126,7 +126,7 @@ func TestResolveHostsGroupUserApplied(t *testing.T) {
 func TestResolveHostsDefaultPort(t *testing.T) {
 	cfg := &Config{
 		Groups: map[string]Group{
-			"test": {Hosts: []string{"some-unknown-host-for-testing"}},
+			"test": {Hosts: strHosts("some-unknown-host-for-testing")},
 		},
 		Defaults: DefaultConfig().Defaults,
 	}
@@ -212,7 +212,7 @@ func TestResolveHostsGroupUserOverridesAtSyntax(t *testing.T) {
 	cfg := &Config{
 		Groups: map[string]Group{
 			"web": {
-				Hosts: []string{"deploy@web-01"},
+				Hosts: strHosts("deploy@web-01"),
 				User:  "admin",
 			},
 		},
@@ -281,7 +281,7 @@ func TestDurationFieldInGroup(t *testing.T) {
 	cfg := &Config{
 		Groups: map[string]Group{
 			"web": {
-				Hosts:   []string{"web-01"},
+				Hosts:   strHosts("web-01"),
 				User:    "deploy",
 				Timeout: Duration{10 * time.Second},
 			},
@@ -292,4 +292,241 @@ func TestDurationFieldInGroup(t *testing.T) {
 	if cfg.Groups["web"].Timeout.Duration != 10*time.Second {
 		t.Errorf("group timeout = %s, want 10s", cfg.Groups["web"].Timeout)
 	}
+}
+
+func TestResolveHostsPreservesTags(t *testing.T) {
+	cfg := &Config{
+		Groups: map[string]Group{
+			"web": {
+				Hosts: []HostEntry{
+					{Host: "web-01", Tags: []string{"prod", "debian12"}},
+					{Host: "web-02", Tags: []string{"staging"}},
+				},
+			},
+		},
+		Defaults: DefaultConfig().Defaults,
+	}
+
+	hosts, err := ResolveHosts(cfg, "web", nil)
+	if err != nil {
+		t.Fatalf("ResolveHosts error: %v", err)
+	}
+	if len(hosts[0].Tags) != 2 || hosts[0].Tags[0] != "prod" {
+		t.Errorf("hosts[0].Tags = %v, want [prod debian12]", hosts[0].Tags)
+	}
+	if len(hosts[1].Tags) != 1 || hosts[1].Tags[0] != "staging" {
+		t.Errorf("hosts[1].Tags = %v, want [staging]", hosts[1].Tags)
+	}
+}
+
+func TestResolveHostsByTag_Single(t *testing.T) {
+	cfg := &Config{
+		Groups: map[string]Group{
+			"web": {
+				Hosts: []HostEntry{
+					{Host: "web-01", Tags: []string{"prod"}},
+					{Host: "web-02", Tags: []string{"staging"}},
+				},
+			},
+		},
+		Defaults: DefaultConfig().Defaults,
+	}
+
+	hosts, err := ResolveHostsByTag(cfg, "prod")
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(hosts) != 1 || hosts[0].Name != "web-01" {
+		t.Errorf("got %v, want [web-01]", hosts)
+	}
+}
+
+func TestResolveHostsByTag_AND(t *testing.T) {
+	cfg := &Config{
+		Groups: map[string]Group{
+			"all": {
+				Hosts: []HostEntry{
+					{Host: "a", Tags: []string{"prod", "arm64"}},
+					{Host: "b", Tags: []string{"prod", "amd64"}},
+					{Host: "c", Tags: []string{"staging", "arm64"}},
+				},
+			},
+		},
+		Defaults: DefaultConfig().Defaults,
+	}
+
+	hosts, err := ResolveHostsByTag(cfg, "prod,arm64")
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(hosts) != 1 || hosts[0].Name != "a" {
+		t.Errorf("got %v, want [a]", hosts)
+	}
+}
+
+func TestResolveHostsByTag_Negation(t *testing.T) {
+	cfg := &Config{
+		Groups: map[string]Group{
+			"all": {
+				Hosts: []HostEntry{
+					{Host: "a", Tags: []string{"prod"}},
+					{Host: "b", Tags: []string{"staging"}},
+					{Host: "c", Tags: []string{"prod", "legacy"}},
+				},
+			},
+		},
+		Defaults: DefaultConfig().Defaults,
+	}
+
+	hosts, err := ResolveHostsByTag(cfg, "prod,!legacy")
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(hosts) != 1 || hosts[0].Name != "a" {
+		t.Errorf("got %v, want [a]", hosts)
+	}
+}
+
+func TestResolveHostsByTag_NoMatch(t *testing.T) {
+	cfg := &Config{
+		Groups: map[string]Group{
+			"web": {Hosts: []HostEntry{{Host: "web-01", Tags: []string{"prod"}}}},
+		},
+		Defaults: DefaultConfig().Defaults,
+	}
+
+	_, err := ResolveHostsByTag(cfg, "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for no matching hosts")
+	}
+}
+
+func TestResolveHostsByTag_Dedup(t *testing.T) {
+	cfg := &Config{
+		Groups: map[string]Group{
+			"web":  {Hosts: []HostEntry{{Host: "shared", Tags: []string{"prod"}}}},
+			"apps": {Hosts: []HostEntry{{Host: "shared", Tags: []string{"prod"}}}},
+		},
+		Defaults: DefaultConfig().Defaults,
+	}
+
+	hosts, err := ResolveHostsByTag(cfg, "prod")
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(hosts) != 1 {
+		t.Errorf("expected 1 host (deduplicated), got %d", len(hosts))
+	}
+}
+
+func TestParseTagExpr(t *testing.T) {
+	tests := []struct {
+		expr    string
+		wantReq []string
+		wantNeg []string
+	}{
+		{"prod", []string{"prod"}, nil},
+		{"prod,arm64", []string{"prod", "arm64"}, nil},
+		{"!staging", nil, []string{"staging"}},
+		{"prod,!staging", []string{"prod"}, []string{"staging"}},
+		{" prod , !staging , arm64 ", []string{"prod", "arm64"}, []string{"staging"}},
+		{"", nil, nil},
+		// Edge case: bare "!" should produce nothing (not an empty-string negation).
+		{"!", nil, nil},
+		{"!,prod", []string{"prod"}, nil},
+	}
+	for _, tt := range tests {
+		req, neg := ParseTagExpr(tt.expr)
+		if !slicesEqual(req, tt.wantReq) {
+			t.Errorf("ParseTagExpr(%q) required = %v, want %v", tt.expr, req, tt.wantReq)
+		}
+		if !slicesEqual(neg, tt.wantNeg) {
+			t.Errorf("ParseTagExpr(%q) negated = %v, want %v", tt.expr, neg, tt.wantNeg)
+		}
+	}
+}
+
+func TestAllTags(t *testing.T) {
+	cfg := &Config{
+		Groups: map[string]Group{
+			"web": {
+				Hosts: []HostEntry{
+					{Host: "a", Tags: []string{"prod", "arm64"}},
+					{Host: "b", Tags: []string{"prod"}},
+				},
+			},
+			"db": {
+				Hosts: []HostEntry{
+					{Host: "c", Tags: []string{"prod", "amd64"}},
+					{Host: "a", Tags: []string{"prod", "arm64"}}, // duplicate host
+				},
+			},
+		},
+		Defaults: DefaultConfig().Defaults,
+	}
+
+	tags := AllTags(cfg)
+	if tags["prod"] != 3 { // a, b, c (a counted once)
+		t.Errorf("prod count = %d, want 3", tags["prod"])
+	}
+	if tags["arm64"] != 1 { // only a
+		t.Errorf("arm64 count = %d, want 1", tags["arm64"])
+	}
+	if tags["amd64"] != 1 { // only c
+		t.Errorf("amd64 count = %d, want 1", tags["amd64"])
+	}
+}
+
+func TestResolveHostsByTag_MergesTagsAcrossGroups(t *testing.T) {
+	cfg := &Config{
+		Groups: map[string]Group{
+			"web":  {Hosts: []HostEntry{{Host: "shared", Tags: []string{"prod"}}}},
+			"apps": {Hosts: []HostEntry{{Host: "shared", Tags: []string{"arm64"}}}},
+		},
+		Defaults: DefaultConfig().Defaults,
+	}
+
+	hosts, err := ResolveHostsByTag(cfg, "prod")
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(hosts) != 1 {
+		t.Fatalf("expected 1 host, got %d", len(hosts))
+	}
+	// Tags should be merged from both groups.
+	tagSet := make(map[string]bool)
+	for _, tag := range hosts[0].Tags {
+		tagSet[tag] = true
+	}
+	if !tagSet["prod"] || !tagSet["arm64"] {
+		t.Errorf("expected merged tags [prod arm64], got %v", hosts[0].Tags)
+	}
+}
+
+func TestAllTags_DuplicateTagOnSameHost(t *testing.T) {
+	cfg := &Config{
+		Groups: map[string]Group{
+			"test": {Hosts: []HostEntry{{Host: "a", Tags: []string{"prod", "prod"}}}},
+		},
+		Defaults: DefaultConfig().Defaults,
+	}
+	tags := AllTags(cfg)
+	if tags["prod"] != 1 {
+		t.Errorf("prod count = %d, want 1 (duplicate tags should not double-count)", tags["prod"])
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return true
+	}
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

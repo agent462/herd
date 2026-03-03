@@ -57,8 +57,8 @@ defaults:
 	if len(pis.Hosts) != 4 {
 		t.Errorf("pis group: expected 4 hosts, got %d", len(pis.Hosts))
 	}
-	if pis.Hosts[0] != "pi-garage" {
-		t.Errorf("pis.Hosts[0] = %q, want \"pi-garage\"", pis.Hosts[0])
+	if pis.Hosts[0].Host != "pi-garage" {
+		t.Errorf("pis.Hosts[0].Host = %q, want \"pi-garage\"", pis.Hosts[0].Host)
 	}
 
 	web := cfg.Groups["web"]
@@ -150,7 +150,7 @@ groups:
 func TestValidateInvalidOutputMode(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Defaults.Output = "invalid"
-	cfg.Groups["test"] = Group{Hosts: []string{"host1"}}
+	cfg.Groups["test"] = Group{Hosts: strHosts("host1")}
 
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected validation error for invalid output mode")
@@ -160,7 +160,7 @@ func TestValidateInvalidOutputMode(t *testing.T) {
 func TestValidateStreamOutputRejected(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Defaults.Output = "stream"
-	cfg.Groups["test"] = Group{Hosts: []string{"host1"}}
+	cfg.Groups["test"] = Group{Hosts: strHosts("host1")}
 
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected validation error for 'stream' output mode")
@@ -169,7 +169,7 @@ func TestValidateStreamOutputRejected(t *testing.T) {
 
 func TestValidateEmptyGroup(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Groups["empty"] = Group{Hosts: []string{}}
+	cfg.Groups["empty"] = Group{Hosts: []HostEntry{}}
 
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected validation error for empty group")
@@ -241,7 +241,7 @@ recipes:
 
 func TestRecipeValidation(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Groups["test"] = Group{Hosts: []string{"host1"}}
+	cfg.Groups["test"] = Group{Hosts: strHosts("host1")}
 
 	// Empty steps should fail.
 	cfg.Recipes = map[string]Recipe{
@@ -296,7 +296,7 @@ parsers:
 
 func TestParserValidation(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Groups["test"] = Group{Hosts: []string{"host1"}}
+	cfg.Groups["test"] = Group{Hosts: strHosts("host1")}
 
 	// No extract rules should fail.
 	cfg.Parsers = map[string]Parser{
@@ -320,7 +320,7 @@ func TestSaveConfig(t *testing.T) {
 	path := filepath.Join(dir, "sub", "config.yaml")
 
 	cfg := DefaultConfig()
-	cfg.Groups["web"] = Group{Hosts: []string{"web-01", "web-02"}}
+	cfg.Groups["web"] = Group{Hosts: strHosts("web-01", "web-02")}
 
 	if err := Save(path, cfg); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -345,6 +345,138 @@ func loadFromString(t *testing.T, content string) *Config {
 		t.Fatalf("failed to load config: %v", err)
 	}
 	return cfg
+}
+
+// strHosts converts bare host name strings to []HostEntry for test convenience.
+func strHosts(names ...string) []HostEntry {
+	entries := make([]HostEntry, len(names))
+	for i, n := range names {
+		entries[i] = HostEntry{Host: n}
+	}
+	return entries
+}
+
+func TestHostEntryBareString(t *testing.T) {
+	content := `
+groups:
+  test:
+    hosts:
+      - host1
+      - host2
+`
+	cfg := loadFromString(t, content)
+	hosts := cfg.Groups["test"].Hosts
+	if len(hosts) != 2 {
+		t.Fatalf("expected 2 hosts, got %d", len(hosts))
+	}
+	if hosts[0].Host != "host1" || len(hosts[0].Tags) != 0 {
+		t.Errorf("hosts[0] = %+v, want {Host:host1 Tags:[]}", hosts[0])
+	}
+}
+
+func TestHostEntryWithTags(t *testing.T) {
+	content := `
+groups:
+  test:
+    hosts:
+      - host: server1
+        tags: [prod, debian12]
+      - host: server2
+        tags: [staging]
+`
+	cfg := loadFromString(t, content)
+	hosts := cfg.Groups["test"].Hosts
+	if len(hosts) != 2 {
+		t.Fatalf("expected 2 hosts, got %d", len(hosts))
+	}
+	if hosts[0].Host != "server1" {
+		t.Errorf("hosts[0].Host = %q, want %q", hosts[0].Host, "server1")
+	}
+	if len(hosts[0].Tags) != 2 || hosts[0].Tags[0] != "prod" || hosts[0].Tags[1] != "debian12" {
+		t.Errorf("hosts[0].Tags = %v, want [prod debian12]", hosts[0].Tags)
+	}
+	if hosts[1].Host != "server2" || len(hosts[1].Tags) != 1 || hosts[1].Tags[0] != "staging" {
+		t.Errorf("hosts[1] = %+v, want {Host:server2 Tags:[staging]}", hosts[1])
+	}
+}
+
+func TestHostEntryMixed(t *testing.T) {
+	content := `
+groups:
+  test:
+    hosts:
+      - simple-host
+      - host: tagged-host
+        tags: [arm64]
+`
+	cfg := loadFromString(t, content)
+	hosts := cfg.Groups["test"].Hosts
+	if len(hosts) != 2 {
+		t.Fatalf("expected 2 hosts, got %d", len(hosts))
+	}
+	if hosts[0].Host != "simple-host" || len(hosts[0].Tags) != 0 {
+		t.Errorf("hosts[0] = %+v, want bare simple-host", hosts[0])
+	}
+	if hosts[1].Host != "tagged-host" || len(hosts[1].Tags) != 1 {
+		t.Errorf("hosts[1] = %+v, want tagged-host with [arm64]", hosts[1])
+	}
+}
+
+func TestHostEntryMarshalRoundTrip(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Groups["test"] = Group{
+		Hosts: []HostEntry{
+			{Host: "bare-host"},
+			{Host: "tagged-host", Tags: []string{"prod", "arm64"}},
+		},
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	hosts := loaded.Groups["test"].Hosts
+	if len(hosts) != 2 {
+		t.Fatalf("expected 2 hosts, got %d", len(hosts))
+	}
+	if hosts[0].Host != "bare-host" || len(hosts[0].Tags) != 0 {
+		t.Errorf("hosts[0] = %+v, want bare-host with no tags", hosts[0])
+	}
+	if hosts[1].Host != "tagged-host" || len(hosts[1].Tags) != 2 {
+		t.Errorf("hosts[1] = %+v, want tagged-host with 2 tags", hosts[1])
+	}
+}
+
+func TestHostEntryMissingHost(t *testing.T) {
+	content := `
+groups:
+  test:
+    hosts:
+      - tags: [prod]
+`
+	_, err := loadStringRaw(content)
+	if err == nil {
+		t.Fatal("expected error for host entry missing 'host' field")
+	}
+}
+
+func TestValidateInvalidTag(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Groups["test"] = Group{
+		Hosts: []HostEntry{
+			{Host: "server1", Tags: []string{"valid", "has space"}},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected validation error for tag with space")
+	}
 }
 
 func loadStringRaw(content string) (*Config, error) {
